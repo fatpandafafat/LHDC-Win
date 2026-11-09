@@ -67,7 +67,7 @@ function Invoke-Native([string]$Tool,[string[]]$Arguments,[string]$Name,[switch]
     }
     return $record
 }
-function Invoke-DriverChange([string[]]$Arguments,[string]$Name) {
+function Invoke-DriverChange([string[]]$Arguments,[string]$Name,[string]$Tool=$deviceTool) {
     $stopped=[Collections.Generic.List[string]]::new()
     function Stop-AudioTree([string]$ServiceName) {
         $service=Get-Service -Name $ServiceName
@@ -81,7 +81,7 @@ function Invoke-DriverChange([string[]]$Arguments,[string]$Name) {
         # Both Endpoint Builder and audiodg can retain the old KS filters and
         # veto device removal. Release their handles before replacing the stack.
         Stop-AudioTree 'AudioEndpointBuilder'
-        return Invoke-Native $deviceTool $Arguments $Name -AllowRestart
+        return Invoke-Native $Tool $Arguments $Name -AllowRestart
     } finally {
         for($i=$stopped.Count-1;$i -ge 0;$i--) {
             Start-Service -Name $stopped[$i]
@@ -215,17 +215,65 @@ function Stop-LhdcService {
         (Get-Service -Name 'LHDC-Win').WaitForStatus('Stopped',[TimeSpan]::FromSeconds(20))
     }
 }
-function Restart-LhdcAudioChild {
+function Get-LhdcAudioChild {
     $children=@(Get-PnpDevice -PresentOnly | Where-Object InstanceId -Like 'LHDCWIN\AUDIO\*')
     # The next dynamically enumerated child reads the new format itself.
-    if ($children.Count -eq 0) { return }
+    if ($children.Count -eq 0) { return $null }
     if ($children.Count -ne 1) { throw 'Expected one LHDC audio child for a format change.' }
     $parent=(Get-PnpDeviceProperty -InstanceId $children[0].InstanceId -KeyName DEVPKEY_Device_Parent).Data
     if ($parent -ne $target) { throw 'Refusing to restart an audio child belonging to a different device.' }
-    $output=@(& pnputil.exe /restart-device $children[0].InstanceId 2>&1)
+    return $children[0]
+}
+function Reinstall-LhdcAudioChildBinding {
+    $child=Get-LhdcAudioChild
+    if ($null -eq $child) { throw 'The LHDC audio child disappeared before its binding could be reinstalled.' }
+    $packageInf=Join-Path $audioPackage 'lhdc-audio.inf'
+    $childInf=(Get-PnpDeviceProperty -InstanceId $child.InstanceId -KeyName DEVPKEY_Device_DriverInfPath).Data
+    # The child already runs the published copy of this package. Reinstalling
+    # the binding then keeps the loaded driver untouched, so nothing is left
+    # pending and the reinstall cannot escalate into a reboot request.
+    $publishedInf=$null
+    if (-not [string]::IsNullOrEmpty($childInf)) {
+        $published=Join-Path (Join-Path $env:windir 'INF') $childInf
+        if (Test-Path -LiteralPath $published) {
+            $publishedInf=(Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash
+        }
+    }
+    $packageHash=(Get-FileHash -LiteralPath $packageInf -Algorithm SHA256).Hash
+    $staged=$false
+    if ($publishedInf -ne $packageHash) {
+        # A different package is bound to the child. Publish this one before
+        # the binding is replaced, otherwise the installer finds no driver.
+        $result.AudioRestage=Invoke-Native $audioTool @('stage',$packageInf,$certificate) 'audio-restage'
+        $staged=$true
+    }
+    # Endpoint Builder and audiodg hold the KS filters of the child. Release
+    # them first, otherwise the reinstall is deferred to the next reboot.
+    $binding=Invoke-DriverChange @('install-child',$child.InstanceId,$packageInf,$certificate) 'audio-rebind' $audioTool
+    if ($binding.reboot_required) { throw '音频子设备驱动重装仍需要手动重启电脑，尚未完成。' }
+    $rebound=Get-LhdcAudioChild
+    if ($null -eq $rebound) { throw 'The LHDC audio child disappeared after its binding was reinstalled.' }
+    $service=(Get-PnpDeviceProperty -InstanceId $rebound.InstanceId -KeyName DEVPKEY_Device_Service).Data
+    $problem=(Get-PnpDeviceProperty -InstanceId $rebound.InstanceId -KeyName DEVPKEY_Device_ProblemCode).Data
+    if ($service -ne 'lhdc-render' -or $problem -ne 0) { throw '音频子设备驱动重装后未通过验证。' }
+    $result.AudioRebind=[ordered]@{event='audio_child_rebind';inf=$childInf;staged=$staged;retained=(-not $staged);instance=$rebound.InstanceId;binding_verified=$true;reboot_required=$false}
+    Write-DeploymentStage 'rebind_audio_child' '已重装音频子设备驱动绑定'
+}
+function Restart-LhdcAudioChild {
+    $child=Get-LhdcAudioChild
+    if ($null -eq $child) { return }
+    $output=@(& pnputil.exe /restart-device $child.InstanceId 2>&1)
     $code=$LASTEXITCODE
     $output | Set-Content -LiteralPath (Join-Path $evidence 'format-restart.txt') -Encoding UTF8
-    if ($code -eq 3010) { $result.RebootRequired=$true; throw '播放格式切换需要手动重启电脑，尚未完成。' }
+    if ($code -eq 3010) {
+        # The retained driver cannot restart in place while the Windows audio
+        # stack still owns the endpoint. Reinstall the child binding instead
+        # of asking for a reboot, and let the endpoint verification confirm
+        # that the selected format is now in effect.
+        Reinstall-LhdcAudioChildBinding
+        $result.FormatRestarted=$true
+        return
+    }
     if ($code -ne 0) { throw "Audio child restart failed, exit=$code." }
     $result.FormatRestarted=$true
 }

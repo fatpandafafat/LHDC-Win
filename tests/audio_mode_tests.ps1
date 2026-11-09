@@ -133,4 +133,97 @@ foreach($case in @('claim','restore','originally-disabled','missing-controller',
     elseif ($case -eq 'wrong-saved-instance') { Require ($null -ne $failure -and $events.Count -eq 0) 'Foreign recovery state must prevent changes to another controller.' }
     else { Require (-not $accepted -and $null -eq $failure -and $events.Count -eq 0) 'An ambiguous or unrelated controller must retain software volume without PnP changes.' }
 }
-Write-Host 'Inbox restoration, audio engine release, reboot handling and AVRCP ownership checks passed; no devices changed.'
+$childLookup=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-LhdcAudioChild'},$true)
+if ($null -eq $childLookup) { throw 'Audio child lookup function not found.' }
+. ([scriptblock]::Create($childLookup.Extent.Text))
+$childRebind=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Reinstall-LhdcAudioChildBinding'},$true)
+if ($null -eq $childRebind) { throw 'Audio child rebind function not found.' }
+. ([scriptblock]::Create($childRebind.Extent.Text))
+$childRestart=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Restart-LhdcAudioChild'},$true)
+if ($null -eq $childRestart) { throw 'Audio child restart function not found.' }
+. ([scriptblock]::Create($childRestart.Extent.Text))
+$sandbox=Join-Path ([IO.Path]::GetTempPath()) ('lhdc-audio-mode-'+[guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path (Join-Path $sandbox 'INF') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $sandbox 'package') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $sandbox 'evidence') -Force | Out-Null
+$publishedInf=Join-Path $sandbox 'INF/oem999.inf'
+$packageInf=Join-Path $sandbox 'package/lhdc-audio.inf'
+$evidence=Join-Path $sandbox 'evidence'
+$audioTool='audio'
+$audioPackage=Join-Path $sandbox 'package'
+$certificate=Join-Path $sandbox 'lhdc-test.cer'
+$childInstance='LHDCWIN\AUDIO\9&1bd4915&0&Audio0'
+function Get-PnpDevice { param([switch]$PresentOnly) [pscustomobject]@{InstanceId=$script:childInstance;Status='OK'} }
+function Get-PnpDeviceProperty {
+    param($InstanceId,$KeyName)
+    $data=switch ($KeyName) {
+        'DEVPKEY_Device_Parent' { $script:childParent }
+        'DEVPKEY_Device_DriverInfPath' { 'oem999.inf' }
+        'DEVPKEY_Device_Service' { $script:childService }
+        'DEVPKEY_Device_ProblemCode' { $script:childProblem }
+    }
+    [pscustomobject]@{Data=$data}
+}
+function pnputil.exe { param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest) $script:LASTEXITCODE=$script:restartCode; 'Device restarted successfully.' }
+function Write-DeploymentStage { param($Stage,$Detail) $events.Add('stage-'+$Stage) }
+function Invoke-Native {
+    param($Tool,$Arguments,$Name,[switch]$AllowRestart)
+    switch ($Arguments[0]) {
+        'stage' { $events.Add('stage'); [pscustomobject]@{event='audio_package_staged';inf='oem999.inf'} }
+        'install-child' { $events.Add('install-child'); [pscustomobject]@{binding_verified=$true;reboot_required=$script:rebindReboot} }
+        default { throw 'Unexpected native operation.' }
+    }
+}
+$originalWindir=$env:windir
+try {
+    $env:windir=$sandbox
+    foreach($case in @('restart-ok','reboot-fallback','stale-published','rebind-reboot','rebind-unverified','no-child')) {
+        $events.Clear()
+        $result=[ordered]@{}
+        $states=@{AudioEndpointBuilder='Running';Audiosrv='Running';AudioVendor='Running';StoppedDependent='Stopped'}
+        $script:restartCode=3010
+        $script:rebindReboot=$false
+        $script:childService='lhdc-render'
+        $script:childProblem=0
+        $script:childParent='headphones'
+        $script:childInstance='LHDCWIN\AUDIO\9&1bd4915&0&Audio0'
+        Set-Content -LiteralPath $publishedInf -Value '[Version]' -Encoding UTF8
+        Set-Content -LiteralPath $packageInf -Value '[Version]' -Encoding UTF8
+        switch($case) {
+            'restart-ok' { $script:restartCode=0 }
+            'stale-published' { Set-Content -LiteralPath $publishedInf -Value '[Other]' -Encoding UTF8 }
+            'rebind-reboot' { $script:rebindReboot=$true }
+            'rebind-unverified' { $script:childService='other-render' }
+            'no-child' { $script:childInstance='USB\VID_0001&PID_0002' }
+        }
+        $failure=$null
+        try { Restart-LhdcAudioChild } catch { $failure=$_.Exception.Message }
+        if ($case -eq 'restart-ok') {
+            Require ($null -eq $failure -and $result.FormatRestarted -eq $true) 'A plain restart must keep succeeding without a rebind.'
+            Require (-not $events.Contains('install-child')) 'A successful restart must not reinstall the binding.'
+        } elseif ($case -eq 'no-child') {
+            Require ($null -eq $failure -and -not $result.Contains('FormatRestarted')) 'An absent audio child must leave the format change to the next enumeration.'
+        } elseif ($case -eq 'reboot-fallback') {
+            Require ($null -eq $failure -and $result.FormatRestarted -eq $true) 'A pending reboot must be resolved by reinstalling the binding.'
+            Require ($events.Contains('install-child')) 'The binding must be reinstalled when the restart asks for a reboot.'
+            Require (-not $events.Contains('stage')) 'A published package must not be staged again.'
+            Require ($events.IndexOf('stop-AudioEndpointBuilder') -lt $events.IndexOf('install-child')) 'The audio stack must release its handles before the binding is replaced.'
+            Require ($events.Contains('start-AudioEndpointBuilder')) 'The audio stack must be restored after the binding is replaced.'
+            Require ($result.AudioRebind.retained -eq $true) 'The published driver must stay in place while the binding is replaced.'
+            Require (-not $result.Contains('RebootRequired')) 'The fallback must not ask for a reboot.'
+            Require ($events.Contains('stage-rebind_audio_child')) 'The rebind must report its progress.'
+        } elseif ($case -eq 'stale-published') {
+            Require ($null -eq $failure -and $events.Contains('stage')) 'A package that is not published yet must be staged before the binding is replaced.'
+            Require ($events.IndexOf('stage') -lt $events.IndexOf('install-child')) 'Staging must happen before the binding is replaced.'
+            Require ($result.AudioRebind.staged -eq $true) 'The result must record that the package was published.'
+        } elseif ($case -eq 'rebind-reboot') {
+            Require ($null -ne $failure -and $events.Contains('install-child')) 'A rebind that still needs a reboot must fail explicitly.'
+        } else {
+            Require ($null -ne $failure -and $events.Contains('install-child')) 'An unverified rebind must fail instead of reporting success.'
+        }
+    }
+} finally {
+    $env:windir=$originalWindir
+    [IO.Directory]::Delete($sandbox,$true)
+}
+Write-Host 'Inbox restoration, audio engine release, reboot handling, binding reinstall and AVRCP ownership checks passed; no devices changed.'
