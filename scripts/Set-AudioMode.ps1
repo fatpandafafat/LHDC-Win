@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory)][string]$PackageRoot,
     [ValidateSet('LHDC','Windows')][string]$Mode='LHDC',
     [ValidateSet(44100,48000,96000,192000)][int]$SampleRate=48000,
@@ -20,6 +20,40 @@ $deviceTool=Join-Path $PackageRoot 'backend/lhdc-device.exe'
 $audioTool=Join-Path $PackageRoot 'backend/lhdc-audio-device.exe'
 $hostTool=Join-Path $PackageRoot 'backend/lhdc-host.exe'
 $target=''
+$progressFile=Join-Path $env:ProgramData 'LHDC-Win/deployment-progress.jsonl'
+$progressClock=[Diagnostics.Stopwatch]::StartNew()
+$progressEnabled=$true
+$progressCreated=$false
+try {
+    $progressDirectory=Split-Path -Parent $progressFile
+    if (-not (Test-Path -LiteralPath $progressDirectory)) {
+        New-Item -ItemType Directory -Path $progressDirectory -Force | Out-Null
+        $progressCreated=$true
+        # The deployment only accepts this directory when it is owned by
+        # SYSTEM or Administrators, so create it with that owner.
+        $progressAcl=Get-Acl -LiteralPath $progressDirectory
+        $progressAcl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+        Set-Acl -LiteralPath $progressDirectory -AclObject $progressAcl
+    }
+    # A new deployment must never read the progress of an earlier one.
+    if (Test-Path -LiteralPath $progressFile) { Remove-Item -LiteralPath $progressFile -Force }
+} catch {
+    # Progress reporting is optional. The deployment continues without it and
+    # the directory is left exactly as the deployment expects to find it.
+    if ($progressCreated -and (Test-Path -LiteralPath (Split-Path -Parent $progressFile))) {
+        Remove-Item -LiteralPath (Split-Path -Parent $progressFile) -Recurse -Force
+    }
+    $progressEnabled=$false
+}
+function Write-DeploymentStage([string]$Stage,[string]$Detail) {
+    # Progress reporting must never break the deployment itself.
+    if (-not $script:progressEnabled) { return }
+    try {
+        $record=[ordered]@{stage=$Stage;detail=$Detail;elapsed_ms=[long]$script:progressClock.ElapsedMilliseconds;at=[DateTimeOffset]::UtcNow.ToString('o')}
+        $line=$record | ConvertTo-Json -Compress
+        [IO.File]::AppendAllText($script:progressFile,$line+"`n",[Text.UTF8Encoding]::new($false))
+    } catch { }
+}
 function Invoke-Native([string]$Tool,[string[]]$Arguments,[string]$Name,[switch]$AllowRestart) {
     if ($Tool -eq $hostTool -and $target) { $Arguments=@('--device',$target)+$Arguments }
     $output=@(& $Tool @Arguments 2>&1)
@@ -94,9 +128,36 @@ function Save-NativeAvrcpIdentity([string]$Instance,[bool]$Own) {
         else { $key.DeleteValue('NativeAvrcpInstance',$false) }
     } finally { $key.Dispose() }
 }
+function Get-NativeAvrcpIdentity {
+    $key=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\LHDC-Win\Device')
+    if ($null -eq $key) { return $null }
+    try { return $key.GetValue('NativeAvrcpInstance') }
+    finally { $key.Dispose() }
+}
+function Test-NativeAvrcpOwned {
+    # True when this deployment still holds the native AVRCP controller of
+    # the selected peer. The state file and the registry entry are cleared
+    # as soon as the controller is handed back to Windows.
+    $stateFile=Join-Path $env:ProgramData 'LHDC-Win/native-avrcp.json'
+    if (-not (Test-Path -LiteralPath $stateFile)) { return $false }
+    $identity=Get-NativeAvrcpIdentity
+    if ([string]::IsNullOrEmpty($identity)) { return $false }
+    try {
+        $state=Get-Content -LiteralPath $stateFile -Encoding UTF8 | ConvertFrom-Json
+    } catch { return $false }
+    if ($state.Instance -ne $identity) { return $false }
+    # The retained claim must belong to the peer being deployed now.
+    $address=$device.address.Replace(':','')
+    $controllers=@(Get-PnpDevice -PresentOnly | Where-Object {
+        $_.InstanceId -match '^BTHENUM\\\{0000110E-0000-1000-8000-00805F9B34FB\}' -and
+        $_.InstanceId -like ('*&'+$address+'_*')
+    })
+    return $controllers.Count -eq 1 -and $controllers[0].InstanceId -eq $identity
+}
 function Set-NativeAvrcpOwnership([bool]$Own) {
     $stateFile=Join-Path $env:ProgramData 'LHDC-Win/native-avrcp.json'
-    if (-not $Own -and -not (Test-Path -LiteralPath $stateFile)) { return $false }
+    $hadStateFile=Test-Path -LiteralPath $stateFile
+    if (-not $Own -and -not $hadStateFile) { return $false }
     $address=$device.address.Replace(':','')
     $controllers=@(Get-PnpDevice -PresentOnly | Where-Object {
         $_.InstanceId -match '^BTHENUM\\\{0000110E-0000-1000-8000-00805F9B34FB\}' -and
@@ -121,6 +182,17 @@ function Set-NativeAvrcpOwnership([bool]$Own) {
         Set-Acl -LiteralPath $stateFile -AclObject (Get-Acl -LiteralPath (Split-Path -Parent $stateFile))
     }
     if ($state.Instance -ne $instance -or $state.WasEnabled -isnot [bool]) { throw 'Saved AVRCP ownership does not match the target headphones.' }
+    $alreadyOwned=$false
+    if ($Own -and $problem -eq 22 -and $hadStateFile) {
+        try { $alreadyOwned=(Get-NativeAvrcpIdentity) -eq $instance } catch { $alreadyOwned=$false }
+    }
+    if ($alreadyOwned) {
+        # This deployment already owns the controller and it is still
+        # disabled. Toggling it again would rebuild the Bluetooth AVCTP
+        # stack, which costs several seconds on every apply.
+        $result.NativeAvrcpOwnership=[ordered]@{Instance=$instance;LhdcOwnsController=$true;OriginallyEnabled=$state.WasEnabled}
+        return $true
+    }
     if ($Own -and $problem -eq 0) { Disable-PnpDevice -InstanceId $instance -Confirm:$false }
     elseif (-not $Own -and $state.WasEnabled -and $problem -eq 22) { Enable-PnpDevice -InstanceId $instance -Confirm:$false }
     $after=(Get-PnpDeviceProperty -InstanceId $instance -KeyName DEVPKEY_Device_ProblemCode).Data
@@ -172,8 +244,16 @@ function Wait-LhdcPlaybackFormat {
     $volumeKey=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\LHDC-Win\Device')
     try { $expectedVolume=if ($volumeKey.GetValue('AbsoluteVolume',0) -eq 1) { 3 } else { 0 } }
     finally { $volumeKey.Dispose() }
+    $devices=$null
+    $devicesAt=$null
     do {
-        $devices=Invoke-Native $hostTool @('audio-devices') 'format-endpoints'
+        # A WASAPI endpoint enumeration costs several seconds. Reuse the
+        # previous list while it is still fresh, and enumerate again only
+        # when the cached list is empty or has gone stale.
+        if ($null -eq $devices -or $null -eq $devicesAt -or ((Get-Date)-$devicesAt).TotalSeconds -gt 3) {
+            $devices=Invoke-Native $hostTool @('audio-devices') 'format-endpoints'
+            $devicesAt=Get-Date
+        }
         $endpoint=@($devices.devices | Where-Object { $_.adapter_id -like '*lhdcwin#audio#*' -and $_.container_id -eq $container -and $_.channels -eq 2 -and $_.sample_rate -eq $SampleRate -and $_.device_sample_rate -eq $SampleRate -and $_.device_bits -eq $inputBits -and ($_.volume_hardware_support -band 3) -eq $expectedVolume })
         if ($endpoint.Count -eq 1) {
             $ready=Invoke-Native $hostTool @('playback-ready',$endpoint[0].id,"$SampleRate","$Bits") 'format-readiness'
@@ -187,7 +267,11 @@ function Wait-LhdcPlaybackFormat {
                     return
                 }
             } else { $stableId=$null; $stableSince=$null }
-        } else { $stableId=$null; $stableSince=$null }
+        } else {
+            # The endpoint did not match. Enumerate again next round to see
+            # whether the endpoint set has changed.
+            $stableId=$null; $stableSince=$null; $devices=$null
+        }
         [Threading.Thread]::Sleep(250)
     } while ((Get-Date) -lt $deadline)
     throw '所选播放格式未在 Windows 端点生效，切换未通过验证。'
@@ -241,6 +325,7 @@ try {
     if (-not $device.found) { throw '请先配对并在面板选择一台蓝牙耳机。' }
     $target=$device.instance
     $result.Device=$device
+    Write-DeploymentStage 'discover' ("已发现目标设备 " + $device.name)
     $allTargets=Invoke-Native $hostTool @('targets') 'targets'
     if (@($allTargets.devices | Where-Object { $_.service -eq 'lhdc-transport' -and $_.instance -ne $target }).Count) {
         throw '请先把当前使用 LHDC 的耳机恢复为 Windows 音频，再切换到另一台耳机。'
@@ -252,9 +337,11 @@ try {
     if ($Mode -eq 'Windows') {
         $bound=$result.Before.service -eq 'lhdc-transport'
         Stop-LhdcService
+        Write-DeploymentStage 'stop_service' '已停止 LHDC 服务'
         $result.Restore=Restore-InboxAudio 'restore'
         $result.After=Invoke-Native $deviceTool @('snapshot',$target) 'after'
         if ($result.After.service -ne 'BthA2dp' -or $result.After.problem -ne 0) { throw 'Windows A2DP restoration did not verify.' }
+        Write-DeploymentStage 'verify' '已验证 Windows A2DP 驱动状态'
         $connection=Invoke-Native $hostTool @('connection',$device.address) 'windows-connection'
         if ($connection.connected) {
             $deadline=(Get-Date).AddSeconds(15)
@@ -272,6 +359,7 @@ try {
             if (-not $stereoReady) { throw 'Windows 原生驱动已绑定，但双声道立体声端点尚未恢复；本次切换未通过验证。' }
             $result.WindowsStereoEndpoint=$stereo[0]
             $result.WindowsStereoVerified=$true
+            Write-DeploymentStage 'audio_endpoint' 'Windows 立体声端点已恢复'
         } else { $result.StereoVerificationPending=$true }
     } else {
         if (-not $device.connected) { throw '首次安装或更新 LHDC 播放驱动前，请连接所选耳机，以便验证真实的 LHDC V5 能力。' }
@@ -295,6 +383,7 @@ try {
         $audioPackage=Join-Path $PackageRoot 'drivers/audio'
         $result.TransportSignature=Invoke-Native $deviceTool @('verify-package',$transportPackage,$certificate) 'transport-signature'
         $result.AudioSignature=Invoke-Native $audioTool @('verify-package',$audioPackage,$certificate) 'audio-signature'
+        Write-DeploymentStage 'verify_signatures' '已校验驱动包签名'
         $thumbprint=$result.AudioSignature.certificate_thumbprint
         if ($thumbprint -ne $result.TransportSignature.certificate_thumbprint) { throw 'Driver package certificates differ.' }
         $servicePath=Join-Path $env:ProgramFiles 'LHDC-Win/lhdc-service.exe'
@@ -322,11 +411,13 @@ try {
         }
         $bound=$result.Before.service -eq 'lhdc-transport'
         Stop-LhdcService
+        Write-DeploymentStage 'stop_service' '已停止 LHDC 服务'
         $result.Selection=Invoke-Native $deviceTool @('select',$target) 'select-device'
         $volumeKey=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\LHDC-Win\Device')
         try { $previousVolumeMode=[int]$volumeKey.GetValue('AbsoluteVolume',0) }
         finally { $volumeKey.Dispose() }
         Write-CodecProfile
+        Write-DeploymentStage 'write_profile' ("已写入编码配置 " + $SampleRate + " Hz / " + $Bits + " bit / " + $Kbps + " kbps")
         if ($bound -and -not $driversCurrent) {
             # The device installer deliberately accepts only the supported
             # Microsoft A2DP binding. Restore that binding before an update.
@@ -339,13 +430,21 @@ try {
             $result.Stage=Invoke-Native $audioTool @('stage',(Join-Path $audioPackage 'lhdc-audio.inf'),$certificate) 'stage'
             $bound=$true
             $result.Binding=Invoke-DriverChange @('install',$target,(Join-Path $transportPackage 'lhdc-transport.inf'),$certificate) 'bind'
+            Write-DeploymentStage 'bind_driver' '已绑定 LHDC 驱动'
             if ($result.Binding.reboot_required) { throw 'Windows 尚未卸载旧音频驱动，LHDC 驱动等待系统重启，切换尚未完成。' }
         } else {
             $result.DriversRetained=$true
+            Write-DeploymentStage 'bind_driver' '已保留现有 LHDC 驱动'
         }
-        # Release any old controller before probing the selected peer anew.
-        Restore-NativeAvrcp
+        # Keep an existing controller claim across runs. Releasing it here
+        # rebuilds the Bluetooth AVCTP stack and costs 8-12 seconds.
+        if (Test-NativeAvrcpOwned) {
+            $result.NativeAvrcpRetained=$true
+        } else {
+            Restore-NativeAvrcp
+        }
         $result.Compatibility=Invoke-Native $hostTool @('probe',"$SampleRate","$Bits","$Kbps") 'playback-compatibility'
+        Write-DeploymentStage 'negotiate' '已完成耳机能力协商'
         $installDirectory=Join-Path $env:ProgramFiles 'LHDC-Win'
         $dataDirectory=Join-Path $env:ProgramData 'LHDC-Win'
         foreach ($directory in @($installDirectory,$dataDirectory)) {
@@ -383,6 +482,7 @@ try {
         try { $volumeKey.SetValue('AbsoluteVolume',[int]$absolute,[Microsoft.Win32.RegistryValueKind]::DWord) }
         finally { $volumeKey.Dispose() }
         $result.AbsoluteVolume=$absolute
+        Write-DeploymentStage 'volume' ("音量模式：" + $(if ($absolute) { '硬件绝对音量' } else { '软件音量' }))
         if ($formatChanged -or $previousVolumeMode -ne [int]$absolute) { Restart-LhdcAudioChild }
         $registry=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\LHDC-Win',$true)
         try {
@@ -425,6 +525,7 @@ try {
             $result.DirectPcm=Invoke-Native $hostTool @('direct-pcm') 'pcm-after-bind'
             if (-not $result.DirectPcm.present) { throw 'Direct PCM interface disappeared after binding the audio driver.' }
             $result.ModeFormats=Invoke-Native $hostTool @('direct-formats') 'mode-formats'
+            Write-DeploymentStage 'audio_endpoint' 'LHDC 音频端点已就绪'
         } else { $result.FormatVerificationPending=$true }
         Copy-Item -LiteralPath (Join-Path $PackageRoot 'backend/lhdc-service.exe') -Destination $servicePath -Force
         $service=Get-LhdcService
@@ -439,15 +540,19 @@ try {
         Wait-LhdcPlaybackFormat
         Start-Service -Name 'LHDC-Win'
         (Get-Service -Name 'LHDC-Win').WaitForStatus('Running',[TimeSpan]::FromSeconds(10))
+        Write-DeploymentStage 'start_service' 'LHDC 服务已启动'
         $result.After=Invoke-Native $deviceTool @('snapshot',$target) 'after'
         $result.Service=Get-LhdcService | Select-Object Name,State,StartMode,StartName,PathName
         if ($result.After.service -ne 'lhdc-transport' -or $result.After.problem -ne 0 -or $result.Service.State -ne 'Running') { throw 'Integrated audio installation did not verify.' }
+        Write-DeploymentStage 'verify' '已验证 LHDC 驱动与服务状态'
         $hashes | ConvertTo-Json | Set-Content -LiteralPath $deploymentFile -Encoding UTF8
     }
     $result.Completed=$true
+    Write-DeploymentStage 'done' '部署完成'
 } catch {
     $result.Error=$_.Exception.Message
     $result.ErrorLocation=$_.ScriptStackTrace
+    Write-DeploymentStage 'failed' $_.Exception.Message
     if ($bound) {
         try {
             Stop-LhdcService

@@ -32,6 +32,18 @@ static std::string utf8(const std::wstring& value) {
     if (!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,value.data(),static_cast<int>(value.size()),result.data(),size,nullptr,nullptr)) win_error("UTF-8 conversion");
     return result;
 }
+// Hardware IDs are reported in mixed case by Windows, so the comparison
+// ignores case like the instance comparisons do.
+static bool starts_with_ignore_case(std::wstring_view value,std::wstring_view prefix) {
+    if (value.size()<prefix.size()) return false;
+    return std::equal(prefix.begin(),prefix.end(),value.begin(),[](wchar_t x,wchar_t y){return std::towupper(x)==std::towupper(y);});
+}
+// Match a hardware ID prefix that ends at a field boundary, so a longer
+// vendor or product identifier cannot be accepted by a shorter one.
+static bool starts_with_field(std::wstring_view value,std::wstring_view prefix) {
+    if (!starts_with_ignore_case(value,prefix)) return false;
+    return value.size()==prefix.size() || value[prefix.size()]==L'_';
+}
 struct DeviceSet {
     HDEVINFO value;
     ~DeviceSet() { if (value!=INVALID_HANDLE_VALUE) SetupDiDestroyDeviceInfoList(value); }
@@ -174,8 +186,10 @@ std::vector<TargetDevice> discover_targets() {
         wchar_t container_text[40]{};
         if (!StringFromGUID2(container,container_text,40)) throw std::runtime_error("Bluetooth container conversion failed");
         const auto hardware=property(set.value,device,DEVPKEY_Device_HardwareIds);
-        const bool melody=same_instance(hardware,L"BTHENUM\\{0000110B-0000-1000-8000-00805F9B34FB}_VID&000102B0_PID&0000") &&
-            same_instance(connection.device.szName,L"OPPO Enco X4");
+        // Any OPPO A2DP sink is treated as a HeyMelody capable peer. The
+        // device name is not part of the decision because firmware revisions
+        // report different names for the same model.
+        const bool melody=starts_with_field(hardware,L"BTHENUM\\{0000110B-0000-1000-8000-00805F9B34FB}_VID&000102B0");
         found.push_back({std::move(instance),*address,connection.device.szName,container_text,
             property(set.value,device,DEVPKEY_Device_Service),connection.device.fConnected!=FALSE,melody});
     }

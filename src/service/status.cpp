@@ -19,6 +19,17 @@ void publish_active_bitrate(unsigned kbps) {
     const DWORD value=kbps;
     const auto result=RegSetKeyValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBitrate",REG_DWORD,&value,sizeof(value));
     if(result!=ERROR_SUCCESS) throw std::runtime_error("Active bitrate write failed, Win32="+std::to_string(result));
+    // A zero bitrate means no playback is active. Clear the published format
+    // so the panel never shows a stale sample rate beside an idle stream.
+    if(kbps==0) publish_active_format(0,0);
+}
+void publish_active_format(unsigned sample_rate, unsigned bits) {
+    const DWORD rate=sample_rate;
+    const auto rate_result=RegSetKeyValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveSampleRate",REG_DWORD,&rate,sizeof(rate));
+    if(rate_result!=ERROR_SUCCESS) throw std::runtime_error("Active sample rate write failed, Win32="+std::to_string(rate_result));
+    const DWORD depth=bits;
+    const auto depth_result=RegSetKeyValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBits",REG_DWORD,&depth,sizeof(depth));
+    if(depth_result!=ERROR_SUCCESS) throw std::runtime_error("Active bit depth write failed, Win32="+std::to_string(depth_result));
 }
 void inspect_audio_service() {
     const auto manager=OpenSCManagerW(nullptr,nullptr,SC_MANAGER_CONNECT);
@@ -59,10 +70,17 @@ void inspect_audio_service() {
     DWORD active=0,active_size=sizeof(active);
     const auto active_error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBitrate",RRF_RT_REG_DWORD,nullptr,&active,&active_size);
     if(active_error!=ERROR_SUCCESS && active_error!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("Active bitrate read failed, Win32="+std::to_string(active_error));
-    if(status.dwCurrentState!=SERVICE_RUNNING || !target || !same_instance(target->service,L"lhdc-transport")) active=0;
+    DWORD active_rate=0,active_rate_size=sizeof(active_rate);
+    const auto active_rate_error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveSampleRate",RRF_RT_REG_DWORD,nullptr,&active_rate,&active_rate_size);
+    if(active_rate_error!=ERROR_SUCCESS && active_rate_error!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("Active sample rate read failed, Win32="+std::to_string(active_rate_error));
+    DWORD active_bits=0,active_bits_size=sizeof(active_bits);
+    const auto active_bits_error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBits",RRF_RT_REG_DWORD,nullptr,&active_bits,&active_bits_size);
+    if(active_bits_error!=ERROR_SUCCESS && active_bits_error!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("Active bit depth read failed, Win32="+std::to_string(active_bits_error));
+    if(status.dwCurrentState!=SERVICE_RUNNING || !target || !same_instance(target->service,L"lhdc-transport")) { active=0; active_rate=0; active_bits=0; }
     std::cout << "{\"event\":\"audio_service\",\"installed\":true,\"running\":" << (status.dwCurrentState==SERVICE_RUNNING?"true":"false")
         << ",\"state\":" << status.dwCurrentState << ",\"pid\":" << status.dwProcessId << ",\"profile_editable\":" << (writable==ERROR_SUCCESS?"true":"false")
         << ",\"peer_capabilities\":" << json_string(avdtp::hex(caps)) << ",\"capability_revision\":"<<current_revision<<",\"media_mtu\":"<<mtu
-        << ",\"adaptive_bitrate\":"<<(adaptive_bitrate_enabled()?"true":"false")<<",\"active_kbps\":"<<active<<"}\n";
+        << ",\"adaptive_bitrate\":"<<(adaptive_bitrate_enabled()?"true":"false")<<",\"active_kbps\":"<<active
+        << ",\"active_sample_rate\":"<<active_rate<<",\"active_bits\":"<<active_bits<<"}\n";
 }
 }

@@ -201,7 +201,7 @@ void select_target(const wchar_t* instance) {
     status=RegSetValueExW(key,L"InstanceId",0,REG_SZ,reinterpret_cast<const BYTE*>(instance),static_cast<DWORD>((wcslen(instance)+1)*sizeof(wchar_t)));
     RegCloseKey(key);
     if (status!=ERROR_SUCCESS) throw lhdc::WindowsError("Device selection write",status);
-    for (const auto name:{L"PeerCapabilities",L"PeerDeviceInstance",L"PeerMediaMtu",L"PeerCapabilityRevision",L"ActiveBitrate"}) {
+    for (const auto name:{L"PeerCapabilities",L"PeerDeviceInstance",L"PeerMediaMtu",L"PeerCapabilityRevision",L"ActiveBitrate",L"ActiveSampleRate",L"ActiveBits"}) {
         status=RegDeleteKeyValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",name);
         if (status!=ERROR_SUCCESS && status!=ERROR_FILE_NOT_FOUND) throw lhdc::WindowsError("Previous device cache reset",status);
     }

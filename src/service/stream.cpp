@@ -147,6 +147,7 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpActivity& hfp)
     std::vector<std::uint8_t> block(encoder.block_bytes());
     bitrate_control=BitrateControl(profile,adaptive,clock_ms());
     publish_active_bitrate(encoder.bitrate());
+    publish_active_format(profile.sample_rate,profile.bits);
     std::osyncstream(std::cout) << "{\"event\":\"direct_audio_started\",\"source\":\"WaveRT\",\"sample_rate\":" << profile.sample_rate << ",\"bits\":" << profile.bits << ",\"kbps\":" << encoder.bitrate()
         << ",\"ceiling_kbps\":"<<profile.kbps<<",\"adaptive_bitrate\":"<<(adaptive?"true":"false")
         << ",\"preroll_ms\":"<<pcm_preroll_ms
@@ -261,6 +262,7 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpActivity& hfp)
             const auto previous=encoder.bitrate();
             encoder.set_bitrate(desired);
             publish_active_bitrate(desired);
+            publish_active_format(profile.sample_rate,profile.bits);
             std::osyncstream(std::cout)<<"{\"event\":\"codec_bitrate_changed\",\"previous_kbps\":"<<previous
                 <<",\"kbps\":"<<desired<<",\"adaptive_bitrate\":"<<(adaptive?"true":"false")
                 <<",\"queue_ms\":"<<queue_ms<<",\"pending_age_us\":"<<timing.pending_age_us<<",\"dropped_bytes_total\":"<<feedback.dropped_bytes()<<",\"restart\":false}"<<std::endl;
