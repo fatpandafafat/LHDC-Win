@@ -110,7 +110,7 @@ Windows 原生统一端点负责 HFP 路由及所需的 16 kHz 单声道转换�
 
 INF 用私有硬件 ID 加标准 Audio Sink 兼容 ID 注册模型，真实蓝牙设备只匹配兼容 ID；安装仍逐实例执行。安装或更新时需连接耳机，绑定后依次进行 Discover、能力交集、SetConfiguration/GetConfiguration、媒体 Open/MTU 和 Close 校验，不发送音频。失败进入现有 Windows 驱动恢复路径。可选 Content Protection 能力不直接阻挡未请求保护的配置，必须保护的对端仍可拒绝配置；不放宽当前编码器的 LHDC V5 版本、5 ms 帧、采样格式与单帧 MTU 要求。
 
-配置读回默认要求服务项和编解码数据与提交值一致。0.8.8 识别已采集到的能力原样返回行为：SetConfiguration 接受后，GetConfiguration 的 LHDC 数据必须逐字节等于同一端点刚才公布的能力，所选单一采样率、位深与码率范围须受该能力覆盖；服务项仅允许空媒体传输、一个 LHDC 编解码项，以及可选的一个空 Delay Reporting 项。重复项、未知新增项和编解码数据变化均拒绝。此路径记录 `configuration_accepted`、`configuration_readback=capability_echo`、`readback_verified=false`，使用提交值配置编码器；精确读回继续记录 `configuration_verified` 和 `exact`。安装探测的最终记录也包含校验方式。能力返回不能证明耳机的实际解码参数，媒体建连和听音须另行验证。
+配置读回不再作为安装的终止条件：精确一致时记录 `configuration_verified` 和 `exact`；其余情况按诊断路径记录 `configuration_accepted`、`configuration_readback=capability_echo`、`readback_verified=false`，使用提交值配置编码器。0.8.8-r5 起，对端回读的是其自身能力表、协商参数还是固定能力表都不再决定安装成败，因为回读内容不描述本次请求的配置；真正把关的是"所选配置必须落在对端通告能力范围内"：所选采样率、位深或码率区间超出通告范围时仍然拒绝。服务项与编解码项的结构仍须合法：仅接受空媒体传输、一个 LHDC 编解码项，以及可选的一个空 Delay Reporting 项，重复项与未知新增项拒绝。安装探测的最终记录包含校验方式。能力返回不能证明耳机的实际解码参数，媒体建连和听音须另行验证。
 
 传输 ABI v3 位于 `include/lhdc_transport.h`。信令、媒体、AVRCP 的 ChannelId 为 1、2、3，各有独立队列；统一音量模式使用 AVRCP 通道，软件音量模式不依赖它。信令保持顺序队列；媒体最多四个 BRB 在途，队列级同步串行执行提交回调，完成回调通过状态锁更新计数。打开与关闭拒绝未完成的同通道操作。标准 Audio Sink 的枚举由 Windows SDP 完成，传输直接使用标准 PSM 0x0019，删除对同一服务记录的私有 SDP 预检。媒体要求信令已建立。
 

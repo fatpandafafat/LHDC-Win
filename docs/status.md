@@ -1,5 +1,11 @@
 # 验证状态
 
+## 0.8.8-r5：配置读回归为诊断（issue #5）
+
+2026-11-09 收到 GitHub issue #5：MT7922／RZ616 连接 OPPO Enco X3 并开启 Hi-Res 后，任意码率的安装都以 `GetConfiguration differs from selected configuration` 终止并回滚。附件 AVDTP 记录显示，400 kbps 与 900 kbps 两次 SetConfiguration 的内容不同，对端回读却逐字节相同，且回读的是一组与通告不同的能力表；Android 参考实现完成同一副耳机的完整流程时根本不发送 GetConfiguration。
+
+源码改为：回读内容只作诊断，不再决定安装成败；保留"所选配置落在通告能力范围内"的校验。Host 构建与 CTest 通过，新增用例覆盖回读内容不同的通过路径与超出通告范围仍被拒绝的路径。issue 提交者在应用改动后于同一副耳机完成 900 kbps 安装并持续输出码流；本机尚未在开启 Hi-Res 的 Enco X3 上复测该路径。
+
 ## 0.8.8：Free4 配置读回兼容（待实机验证）
 
 2026-10-19 收到 `RZ616-Free4.zip`，其中 `integrated-20261019-151114-262-LHDC` 记录 Windows 26300／RZ616／Enco Free4，目标驱动绑定和 AVDTP 信令正常。LHDC 能力为 `0100070d00ff3a050000354c3016114000`；48 kHz／16 位／400 kbps 配置 `0100070d00ff3a050000354c10d4110000` 被接受，但 GetConfiguration 返回原能力加 `0800`，触发原有全等校验。Abort 和回退 Windows A2DP 成功，尚未 Open 媒体或发送音频。AltA2DP 对应另两台未连接耳机，日志没有指向此次目标的第三方驱动绑定冲突。

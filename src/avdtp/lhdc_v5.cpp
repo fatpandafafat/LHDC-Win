@@ -79,9 +79,11 @@ ConfigurationReadback verify_configuration(std::span<const std::uint8_t> expecte
         selected.min_kbps>selected.max_kbps || selected.min_kbps<peer.min_kbps || selected.max_kbps>peer.max_kbps)
         throw std::runtime_error("Selected configuration exceeds the advertised LHDC V5 capabilities");
 
-    const auto advertised=capabilities(peer_capabilities);
-    const auto codec=std::find_if(advertised.begin(),advertised.end(),[](const Capability& cap){return cap.category==7;});
-    if (right[1].data!=codec->data) throw std::runtime_error("GetConfiguration differs from selected configuration");
+    // The readback is a diagnostic, not a verdict: peers answer it with their own
+    // capability table, with the negotiated parameters, or with a fixed table, and
+    // the answer does not describe the configuration that was just requested. The
+    // selected configuration has already been checked against the advertised
+    // capabilities above, so a differing readback no longer fails the deployment.
     return ConfigurationReadback::capability_echo;
 }
 }

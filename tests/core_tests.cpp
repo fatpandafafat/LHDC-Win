@@ -247,7 +247,15 @@ int main() {
         rejects([]{av::unhex("0z");},"Invalid hex input");
         require(av::unhex("00 01\nff")==av::Bytes{0,1,255},"Whitespace in hex");
         av::verify_configuration(caps,caps,caps);
-        rejects([&]{auto actual=caps;actual[12]=4;av::verify_configuration(caps,actual,caps);},"GetConfiguration mismatch");
+        // A peer may answer GetConfiguration with its own capability table instead of the
+        // configuration that was requested. The readback is a diagnostic, not a verdict:
+        // only the selected configuration is checked against the advertised capabilities.
+        const auto peer_table=av::unhex("0100070d00ff3a050000354c3507114000");
+        require(av::verify_configuration(av::local_capabilities(lhdc::Profile{48000,24,900}),peer_table,peer_table)
+            ==av::ConfigurationReadback::capability_echo,"A differing readback no longer fails the deployment");
+        const auto narrow_peer=av::unhex("0100070d00ff3a050000354c3512114000");
+        rejects([&]{av::verify_configuration(av::local_capabilities(lhdc::Profile{48000,24,900}),narrow_peer,narrow_peer);},
+            "A selected configuration beyond the advertised range is still refused");
         lhdc::Encoder first,second;
         require(first.block_samples()==240 && first.block_bytes()==960,"PCM block dimensions");
         rejects([&]{first.encode(av::Bytes(959));},"Partial PCM input");
