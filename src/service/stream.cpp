@@ -37,7 +37,7 @@ bool stopped(HANDLE stop) {
     if (result!=WAIT_OBJECT_0 && result!=WAIT_TIMEOUT) throw std::runtime_error("Service stop wait failed");
     return result==WAIT_OBJECT_0;
 }
-void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpActivity& hfp) {
+void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpWatcher& hfp) {
     AudioTask priority; Pacer pacer;
     auto quality=profile;
     const auto revision=capability_revision();
@@ -126,6 +126,8 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpActivity& hfp)
     std::uint64_t frames=0,packets=0,bytes=0,nonzero_blocks=0;
     std::uint64_t discarded_frames=0,encoder_discarded_samples=0;
     std::uint64_t send_stalls=0;
+    // The cost of the call-state poll. It runs on the watcher's own thread, so
+    // this is what the poll costs, not what it costs the media thread.
     std::int64_t max_hfp_check_us=0;
     std::int64_t max_send_us=0,max_submit_us=0,max_io_wait_us=0,max_completion_us=0,max_pending_age_us=0,max_encode_us=0,max_wait_us=0,max_report_us=0,max_profile_us=0,max_state_us=0,max_log_us=0;
     auto elapsed_us=[](auto start) { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count(); };
@@ -156,11 +158,12 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpActivity& hfp)
     ProgressLog progress(std::cout);
     while (!stopped(stop)) {
         if(std::chrono::steady_clock::now()>=next_hfp_check) {
-            const auto check_started=std::chrono::steady_clock::now();
-            const bool calling=hfp.active();
-            max_hfp_check_us=std::max(max_hfp_check_us,elapsed_us(check_started));
-            if(calling) break;
+            // The watcher polls the call state on its own thread, so reading it
+            // here costs an atomic load instead of a COM enumeration on the
+            // thread that submits the media packets.
+            if(hfp.active()) break;
             next_hfp_check=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
+            max_hfp_check_us=std::max(max_hfp_check_us,hfp.last_poll_us());
         }
         session.check();
         const auto input=reader.stats();
@@ -287,7 +290,7 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpActivity& hfp)
 }
 void serve_audio(HANDLE stop,unsigned duration_seconds) {
     ComApartment apartment(COINIT_MULTITHREADED);
-    std::unique_ptr<HfpActivity> hfp;
+    std::unique_ptr<HfpWatcher> hfp;
     bool was_hfp=false;
     publish_active_bitrate(0);
     const auto started=std::chrono::steady_clock::now();
@@ -309,7 +312,7 @@ void serve_audio(HANDLE stop,unsigned duration_seconds) {
                 // Bluetooth devnodes can appear after the automatic service
                 // starts. Initialize within the retry loop and rebuild watches
                 // after a disconnect so they belong to the current endpoints.
-                if (!hfp) hfp=std::make_unique<HfpActivity>();
+                if (!hfp) hfp=std::make_unique<HfpWatcher>();
                 const bool calling=hfp->active();
                 if(calling!=was_hfp) {
                     was_hfp=calling;

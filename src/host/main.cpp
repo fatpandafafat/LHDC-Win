@@ -178,6 +178,7 @@ static int run(int argc,char** argv) {
         else if (command=="direct-formats" && argc==2) lhdc::inspect_direct_formats();
         else if (command=="direct-capture" && argc==4) lhdc::capture_direct_pcm(number(argv[2]),file_path(argv[3]));
         else if (command=="audio-status" && argc==2) lhdc::inspect_audio_service();
+        else if (command=="active-bitrate" && argc==2) lhdc::inspect_active_bitrate();
         else if (command=="hfp-status" && argc==2) lhdc::inspect_hfp_activity();
         else if (command=="call-probe" && argc==3) lhdc::probe_headphone_microphone(number(argv[2]));
         else if (command=="audio-devices" && argc==2) lhdc::inspect_audio_devices();

@@ -6,9 +6,11 @@
 #include <devpkey.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <thread>
 #include <vector>
 namespace lhdc {
 namespace {
@@ -118,5 +120,37 @@ void inspect_hfp_activity() {
     ComApartment apartment(COINIT_MULTITHREADED);
     const bool active=HfpActivity{}.active();
     std::cout<<"{\"event\":\"hfp_activity\",\"active\":"<<(active?"true":"false")<<"}\n";
+}
+HfpWatcher::HfpWatcher() {
+    worker_=std::thread([this]{ watch(); });
+}
+HfpWatcher::~HfpWatcher() {
+    stop_.store(true,std::memory_order_relaxed);
+    if(worker_.joinable()) worker_.join();
+}
+void HfpWatcher::watch() {
+    // The endpoint enumeration needs an apartment of its own: the thread that
+    // publishes the state is not the thread that reads it.
+    ComApartment apartment(COINIT_MULTITHREADED);
+    std::unique_ptr<HfpActivity> activity;
+    while(!stop_.load(std::memory_order_relaxed)) {
+        const auto started=std::chrono::steady_clock::now();
+        try {
+            // The device can appear after the service starts, and the watches
+            // belong to the endpoints of the current session, so the activity
+            // is rebuilt when it cannot be created.
+            if(!activity) activity=std::make_unique<HfpActivity>();
+            active_.store(activity->active(),std::memory_order_relaxed);
+        } catch(const std::exception&) {
+            // A failed poll keeps the last known state: the caller decides what
+            // an unknown call state means, and the next poll may succeed.
+            activity.reset();
+            failures_.fetch_add(1,std::memory_order_relaxed);
+        }
+        last_poll_us_.store(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count(),std::memory_order_relaxed);
+        // Sleep in short slices so the watcher stops promptly.
+        for(int slice=0;slice<10&&!stop_.load(std::memory_order_relaxed);++slice)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 }

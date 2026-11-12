@@ -40,6 +40,7 @@ Windows 回归还模拟多个蓝牙适配器：第一个未知或仅有旧配对
 | 命令 | 用途 |
 | --- | --- |
 | `target`、`inspect`、`audio-status`、`audio-devices`、`audio-inputs`、`hfp-status` | 只读查询传输、服务、端点和麦克风状态 |
+| `active-bitrate` | 只读查询服务当前播放码率；只读注册表与 SCM 状态，不枚举设备、不查询蓝牙射频，可在播放中反复轮询 |
 | `hires`、`hires on`、`hires off` | 读取或切换耳机 Hi-Res；需要耳机连接；写入须 ACK 和读回均成功，切换后刷新 AVDTP 能力 |
 | `direct-pcm`、`direct-formats` | 只读核验实际 WaveRT 状态与格式列表 |
 | `playback-ready ENDPOINT RATE BITS` | 初始化客户端检查格式，不启动播放 |

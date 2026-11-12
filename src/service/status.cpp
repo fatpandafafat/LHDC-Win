@@ -31,6 +31,38 @@ void publish_active_format(unsigned sample_rate, unsigned bits) {
     const auto depth_result=RegSetKeyValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBits",REG_DWORD,&depth,sizeof(depth));
     if(depth_result!=ERROR_SUCCESS) throw std::runtime_error("Active bit depth write failed, Win32="+std::to_string(depth_result));
 }
+void inspect_active_bitrate() {
+    // The service publishes the bitrate it is really playing. Reading it back
+    // here touches neither the Bluetooth stack nor the device tree, so a panel
+    // that polls this while the earbuds play does not query the radio.
+    DWORD active=0,active_size=sizeof(active);
+    const auto active_error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBitrate",RRF_RT_REG_DWORD,nullptr,&active,&active_size);
+    if(active_error!=ERROR_SUCCESS && active_error!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("Active bitrate read failed, Win32="+std::to_string(active_error));
+    DWORD active_rate=0,active_rate_size=sizeof(active_rate);
+    const auto rate_error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveSampleRate",RRF_RT_REG_DWORD,nullptr,&active_rate,&active_rate_size);
+    if(rate_error!=ERROR_SUCCESS && rate_error!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("Active sample rate read failed, Win32="+std::to_string(rate_error));
+    DWORD active_bits=0,active_bits_size=sizeof(active_bits);
+    const auto bits_error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBits",RRF_RT_REG_DWORD,nullptr,&active_bits,&active_bits_size);
+    if(bits_error!=ERROR_SUCCESS && bits_error!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("Active bit depth read failed, Win32="+std::to_string(bits_error));
+    // A service that is not running has no live stream: the published value
+    // would be stale, so it is reported as idle.
+    bool running=false;
+    const auto manager=OpenSCManagerW(nullptr,nullptr,SC_MANAGER_CONNECT);
+    if (manager) {
+        const auto service=OpenServiceW(manager,L"LHDC-Win",SERVICE_QUERY_STATUS);
+        if (service) {
+            SERVICE_STATUS_PROCESS status{}; DWORD size=0;
+            if (QueryServiceStatusEx(service,SC_STATUS_PROCESS_INFO,reinterpret_cast<BYTE*>(&status),sizeof(status),&size))
+                running=status.dwCurrentState==SERVICE_RUNNING;
+            CloseServiceHandle(service);
+        }
+        CloseServiceHandle(manager);
+    }
+    if (!running) { active=0; active_rate=0; active_bits=0; }
+    std::cout << "{\"event\":\"active_bitrate\",\"active_kbps\":"<<active
+        << ",\"active_sample_rate\":"<<active_rate<<",\"active_bits\":"<<active_bits
+        << ",\"running\":"<<(running?"true":"false")<<"}\n";
+}
 void inspect_audio_service() {
     const auto manager=OpenSCManagerW(nullptr,nullptr,SC_MANAGER_CONNECT);
     if (!manager) throw std::runtime_error("SCM status open failed, Win32="+std::to_string(GetLastError()));

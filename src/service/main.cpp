@@ -15,7 +15,21 @@ DWORD run_logged(HANDLE stop,bool supervisor) {
     PWSTR directory=nullptr;
     if(FAILED(SHGetKnownFolderPath(FOLDERID_ProgramData,0,nullptr,&directory))) return ERROR_PATH_NOT_FOUND;
     std::unique_ptr<wchar_t,decltype(&CoTaskMemFree)> memory(directory,&CoTaskMemFree);
-    std::ofstream log(std::filesystem::path(directory)/L"LHDC-Win"/L"service.jsonl",std::ios::binary|std::ios::app);
+    const auto path=std::filesystem::path(directory)/L"LHDC-Win"/L"service.jsonl";
+    // The log is appended for the life of the service, so it is bounded: a
+    // service that runs for months would otherwise fill the disk. The current
+    // file is kept and the previous one is rotated out, so the newest events
+    // always stay readable.
+    constexpr std::uintmax_t max_log_bytes=8u*1024u*1024u;
+    try {
+        if(std::filesystem::exists(path)&&std::filesystem::file_size(path)>max_log_bytes) {
+            std::error_code error;
+            const auto previous=path.parent_path()/L"service.jsonl.1";
+            std::filesystem::remove(previous,error);
+            std::filesystem::rename(path,previous,error);
+        }
+    } catch(const std::exception&) { }
+    std::ofstream log(path,std::ios::binary|std::ios::app);
     if(!log) return ERROR_OPEN_FAILED;
     const auto out=std::cout.rdbuf(log.rdbuf()),err=std::cerr.rdbuf(log.rdbuf());
     DWORD result=NO_ERROR;

@@ -1,5 +1,11 @@
 # 验证状态
 
+## 0.8.8-r6：播放热路径去除阻塞枚举（待实机验证）
+
+服务此前每 100 ms 在提交媒体包的线程上枚举音频端点以判断是否处于通话。该 COM 调用在本机实测中位耗时 19 ms、p90 26 ms、p99 148 ms、最长 467 ms；枚举期间媒体包无法提交，发送窗口随之空出，是卡顿与发送等待变长的来源之一。历史日志中 media_send_stall 共 235 次，94% 成簇出现，io_wait_us 最高 438 ms，横跨 r5 之前的多个会话，属既有的蓝牙传输层阻塞，不是本次改动引入。
+
+源码改为：通话状态由后台线程轮询并发布原子标志，播放线程只读取标志；新增 `active-bitrate` 只读命令，只读注册表与 SCM 状态，面板轮询码率不再查询蓝牙射频；服务日志超过 8 MB 时轮转。Host 构建与 CTest 通过；本机尚未在播放中复测该路径。
+
 ## 0.8.8-r5：配置读回归为诊断（issue #5）
 
 2026-11-09 收到 GitHub issue #5：MT7922／RZ616 连接 OPPO Enco X3 并开启 Hi-Res 后，任意码率的安装都以 `GetConfiguration differs from selected configuration` 终止并回滚。附件 AVDTP 记录显示，400 kbps 与 900 kbps 两次 SetConfiguration 的内容不同，对端回读却逐字节相同，且回读的是一组与通告不同的能力表；Android 参考实现完成同一副耳机的完整流程时根本不发送 GetConfiguration。
