@@ -221,14 +221,20 @@ int bind(const wchar_t* instance,const std::filesystem::path& supplied,const std
     if (!administrator()) throw std::runtime_error("Run binding in an elevated administrator process");
     const auto current_service=target.property(DEVPKEY_Device_Service);
     if (restore) {
-        const bool inbox=equal(current_service,L"BthA2dp") && equal(target.property(DEVPKEY_Device_DriverInfPath),standard_inf);
-        if (!inbox && !equal(current_service,L"lhdc-transport")) throw std::runtime_error("Restore refused: current driver is not this project's transport or the recorded inbox driver");
+        // The earphone may sit on any inbox Bluetooth audio driver: the
+        // recorded A2DP driver or the alternative A2DP driver that some
+        // headsets match. Restoring selects the inbox driver explicitly, so
+        // none of them has to be converted first.
+        const bool inbox=equal(target.property(DEVPKEY_Device_DriverInfPath),standard_inf)
+            || equal(current_service,L"AltA2DP");
+        if (!inbox && !equal(current_service,L"lhdc-transport")) throw std::runtime_error("Restore refused: current driver is not this project's transport or an inbox Bluetooth audio driver");
         target.clear_transport_security();
         target.reset_inbox_access();
     } else {
         if (!(code_integrity_options()&CODEINTEGRITY_OPTION_TESTSIGN)) throw std::runtime_error("Test signing is not active in the running kernel; do not bind this test driver before rebooting into test mode");
-        if (!equal(current_service,L"BthA2dp") || !equal(target.property(DEVPKEY_Device_DriverInfPath),standard_inf))
-            throw std::runtime_error("Binding refused: expected the recorded Microsoft A2DP driver");
+        // Installing the transport replaces whatever inbox driver the headset
+        // currently uses, so the device does not have to be moved to the
+        // recorded A2DP driver first.
         if (!equal(supplied.filename().wstring(),L"lhdc-transport.inf")) throw std::invalid_argument("Only lhdc-transport.inf may be bound");
         lhdc::verify_package_signature(std::filesystem::absolute(supplied).parent_path(),certificate);
     }

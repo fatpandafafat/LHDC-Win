@@ -8,6 +8,9 @@
 #include <objbase.h>
 #include <stdexcept>
 #include <iostream>
+#include <sstream>
+#include <codecvt>
+#include <locale>
 #include <memory>
 #include <cstring>
 #include <chrono>
@@ -134,11 +137,85 @@ bool absolute_volume_enabled() {
     if (enabled>1) throw std::runtime_error("Invalid volume mode");
     return enabled!=0;
 }
+// The native AVRCP controller owns the AVCTP port. While it stays enabled,
+// the transport driver cannot open its own AVRCP channel, the absolute volume
+// negotiation fails and the whole media session aborts. The deployment
+// records the controller it finds, but a failed deployment removes that
+// record again, so the service has to be able to claim it on its own.
+static std::wstring address_tag(std::uint64_t address) {
+    std::wostringstream out;out<<std::uppercase<<std::hex<<std::setfill(L'0')<<std::setw(12)<<address;
+    return out.str();
+}
+static std::wstring find_native_avrcp_controller(std::uint64_t address) {
+    DeviceSet set{SetupDiGetClassDevsW(nullptr,nullptr,nullptr,DIGCF_PRESENT|DIGCF_ALLCLASSES)};
+    if (set.value==INVALID_HANDLE_VALUE) win_error("PnP enumeration");
+    const std::wstring tag=L"&"+address_tag(address)+L"_";
+    for (DWORD i=0;;++i) {
+        SP_DEVINFO_DATA device{sizeof(device)};
+        if (!SetupDiEnumDeviceInfo(set.value,i,&device)) {
+            if (GetLastError()==ERROR_NO_MORE_ITEMS) break;
+            win_error("Device enumeration");
+        }
+        std::vector<wchar_t> id(MAX_DEVICE_ID_LEN);
+        if (!SetupDiGetDeviceInstanceIdW(set.value,&device,id.data(),static_cast<DWORD>(id.size()),nullptr)) continue;
+        const std::wstring instance(id.data());
+        if (!starts_with_ignore_case(instance,L"BTHENUM\\{0000110E-0000-1000-8000-00805F9B34FB}")) continue;
+        if (instance.find(tag)==std::wstring::npos) continue;
+        return instance;
+    }
+    return {};
+}
+static std::wstring json_escape(const std::wstring& value) {
+    std::wstring out;
+    for (wchar_t character:value) {
+        if (character==L'\\'||character==L'"') out+=L'\\';
+        out+=character;
+    }
+    return out;
+}
+// Record the claim so the deployment keeps it across runs and restores the
+// inbox controller when the transport is handed back.
+static void record_native_avrcp_claim(const std::wstring& instance) {
+    HKEY key=nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win\\Device",0,nullptr,0,KEY_SET_VALUE,nullptr,&key,nullptr)!=ERROR_SUCCESS)
+        throw WindowsError("Native AVRCP identity write",GetLastError());
+    const auto status=RegSetValueExW(key,L"NativeAvrcpInstance",0,REG_SZ,reinterpret_cast<const BYTE*>(instance.c_str()),
+        static_cast<DWORD>((instance.size()+1)*sizeof(wchar_t)));
+    RegCloseKey(key);
+    if (status!=ERROR_SUCCESS) throw WindowsError("Native AVRCP identity write",status);
+    const std::wstring path=L"C:\\ProgramData\\LHDC-Win\\native-avrcp.json";
+    const std::wstring json=L"{\"Instance\": \""+json_escape(instance)+L"\", \"WasEnabled\": true}";
+    // The deployment reads this file as UTF-8, so it has to be written that
+    // way instead of as UTF-16.
+    const auto encoded=utf8(json);
+    HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if (file==INVALID_HANDLE_VALUE) throw WindowsError("Native AVRCP state write",GetLastError());
+    DWORD written=0;
+    const auto ok=WriteFile(file,encoded.data(),static_cast<DWORD>(encoded.size()),&written,nullptr);
+    CloseHandle(file);
+    if (!ok||written!=encoded.size()) throw WindowsError("Native AVRCP state write",GetLastError());
+}
 void claim_avrcp_controller() {
     if (!absolute_volume_enabled()) return;
     wchar_t instance[MAX_DEVICE_ID_LEN]{};DWORD size=sizeof(instance);
     const auto error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win\\Device",L"NativeAvrcpInstance",RRF_RT_REG_SZ,nullptr,instance,&size);
-    if (error==ERROR_FILE_NOT_FOUND) return;
+    if (error==ERROR_FILE_NOT_FOUND) {
+        // No recorded controller: find the one this earphone exposes and
+        // claim it, otherwise the AVRCP channel can never be opened.
+        const auto found=find_native_avrcp_controller(target_device().address);
+        if (found.empty()) return;
+        std::vector<wchar_t> located(found.begin(),found.end());
+        located.push_back(L'\0');
+        DEVINST discovered=0;
+        if (CM_Locate_DevNodeW(&discovered,located.data(),CM_LOCATE_DEVNODE_NORMAL)!=CR_SUCCESS) return;
+        ULONG flags=0,problem=0;
+        if (CM_Get_DevNode_Status(&flags,&problem,discovered,0)!=CR_SUCCESS) return;
+        if (problem==CM_PROB_DISABLED) { record_native_avrcp_claim(found); return; }
+        if (problem) return;
+        if (CM_Disable_DevNode(discovered,CM_DISABLE_UI_NOT_OK|CM_DISABLE_PERSIST)!=CR_SUCCESS) return;
+        record_native_avrcp_claim(found);
+        return;
+    }
     if (error!=ERROR_SUCCESS) throw WindowsError("Native AVRCP identity read",error);
     DEVINST device=0;auto status=CM_Locate_DevNodeW(&device,instance,CM_LOCATE_DEVNODE_NORMAL);
     if (status==CR_NO_SUCH_DEVNODE) return;
