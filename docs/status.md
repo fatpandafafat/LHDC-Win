@@ -1,12 +1,32 @@
 # 验证状态
 
-## 0.8.8-r8：端点延迟上报与码率阶梯实测（本机执行，听音确认由用户完成）
+## 0.8.8-r9：撤回端点延迟上报，保留实测与日志（本机执行，听音确认由用户完成）
+
+本机排查记录，OPPO Enco X4，Intel 蓝牙适配器，48 kHz／16 bit，2026-11-13。
+
+问题：r8 让驱动把管线延迟填进 `GetHWLatency` 的 `FifoSize`。音频引擎给本端点分配的渲染缓冲是 1056 帧（22 ms），设备周期 10 ms，实测引擎只接受不超过约 32 ms 的硬件延迟；上报 40 ms 时 `IAudioClient::Initialize` 直接返回 `AUDCLNT_E_BUFFER_SIZE_ERROR`（0x88890016），任何客户端都打不开端点。r8 在 1000 kbps 下上报约 200 ms，端点因此报废，部署脚本在格式就绪检查处失败并执行恢复流程，把蓝牙节点交还给微软 A2DP 驱动，表现为耳机彻底没有声音。
+
+实测边界（每次改值后重建端点，`DeclaredLatencyMs` 临时覆盖项驱动）：
+
+| 上报值 | 端点可用 | `IAudioClient::Initialize` | `GetStreamLatency` |
+|---|---|---|---|
+| 0 ms | 是 | 成功 | 0 ms |
+| 10 / 20 / 30 ms | 是 | 成功 | 0 ms |
+| 40 / 50 / 80 / 120 / 200 ms | 否 | `AUDCLNT_E_BUFFER_SIZE_ERROR` | 读取失败 |
+
+两条结论：一是超过约 32 ms 会被引擎拒绝，且端点一旦失败就不可恢复，必须重启整机；二是即使在被接受的区间内，`IAudioClient::GetStreamLatency` 仍然返回 0，播放器通过标准接口拿不到该值。
+
+改动：驱动不再声明硬件延迟，`FifoSize` 回到 0，`LHDC_PCM_LATENCY` 属性与相关通道一并撤除；服务继续按实测公式计算管线延迟（PCM 队列水位 + 在途包龄 + 编码间隔 20 ms，无实测时按码率估算 1000 kbps 约 200 ms、其余约 50 ms），以 `pipeline_latency_ms` 写入 `direct_audio_progress` 日志。码率维持 1000 kbps，按用户决定接受该档位的丢包。
+
+驱动包版本升到 0.8.8.2：驱动二进制每次重建都不同（签名带时间戳），INF 版本不变时 Windows 会复用已发布的驱动包目录并保留旧二进制，r8 已为此加入"安装后核对系统实际加载的镜像与随包二进制逐字节一致"的检查。
+
+## 0.8.8-r8：端点延迟上报与码率阶梯实测（本机执行，听音确认由用户完成；延迟上报部分已在 r9 撤回）
 
 本机排查记录，OPPO Enco X4，Intel 蓝牙适配器，48 kHz／16 bit，2026-11-13。
 
 延迟。Windows 对 LHDC 播放端点上报的流延迟为 0 ms：端点缓冲 22 ms、`PKEY_AudioEndpointLatency` 属性不存在，渲染端点的 `GetHWLatency` 三个字段全填 0。播放器按"零延迟"对齐音画，视频因此始终跑在音频前面。实测管线延迟为 PCM 队列水位（19~115 ms，随码率与拥塞变化）加在途包龄加编码间隔 20 ms，1000 kbps 下约 200 ms，400/500 kbps 下约 40~50 ms，与用户给出的数字一致。
 
-改动：服务按上述公式计算延迟，经新增的 `LHDC_PCM_LATENCY` 属性下发；驱动在 `GetHWLatency` 中把该毫秒值按帧数填入 `FifoSize`，音频引擎随即交给 `IAudioClient::GetStreamLatency`。新增 `lhdc-host latency` 只读命令核对上报结果。
+改动（已在 r9 撤回）：服务按上述公式计算延迟，经新增的 `LHDC_PCM_LATENCY` 属性下发；驱动在 `GetHWLatency` 中把该毫秒值按帧数填入 `FifoSize`，音频引擎随即交给 `IAudioClient::GetStreamLatency`。新增 `lhdc-host latency` 只读命令核对上报结果。该通道会被音频引擎拒绝，见 r9 的实测边界。
 
 码率阶梯实测（每档 90 秒合成双声道测试音，440/880 Hz，48 kHz／16 bit，档位切换后重建会话，计数互不重叠）：
 

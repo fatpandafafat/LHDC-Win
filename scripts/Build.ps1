@@ -149,15 +149,12 @@ $2
     m_byteDisplacementCarryForward += partialFrame * 1000;
 '@
     Replace-Source $stream '    m_SaveData.Disable\(drmRights->CopyProtect\);' '    m_pMiniport->m_LhdcPcm.SetProtected(drmRights->CopyProtect != FALSE);'
-    # The Bluetooth path behind this endpoint delays the audio by more than the
-    # render buffer does. Report it so the audio engine hands the delay to
-    # players, which then delay the video to match what the earbud plays.
-    Replace-Source $stream '(?m)    Latency_->ChipsetDelay = 0;\r?\n    Latency_->CodecDelay = 0;\r?\n    Latency_->FifoSize = 0;' @'
-    Latency_->ChipsetDelay = 0;
-    Latency_->CodecDelay = 0;
-    const ULONG lhdcRate = (m_pWfExt && m_pWfExt->Format.nSamplesPerSec) ? m_pWfExt->Format.nSamplesPerSec : 48000;
-    Latency_->FifoSize = m_pMiniport->m_LhdcPcm.LatencyFrames(lhdcRate);
-'@
+    # The render endpoint does not claim a hardware FIFO. The Bluetooth path
+    # behind it delays the audio by far more than the render buffer holds, and
+    # the audio engine rejects a hardware latency that does not fit the buffer
+    # it allocated: 40 ms already makes every client fail to open the
+    # endpoint, and the endpoint stays unusable until the stack is reloaded.
+    # The measured pipeline delay therefore stays in the service log.
     Replace-Source 'Source/Main/minwavertstream.h' '(?m)^#include "savedata.h"\r?\n#include "ToneGenerator.h"' ''
     Replace-Source 'Source/Main/minwavertstream.h' '(?m)^    CSaveData +m_SaveData;\r?\n    ToneGenerator +m_ToneGenerator;' ''
     Replace-Source 'Source/Inc/mintopo.h' '(?m)^public:' "public:`n    volatile LONG m_LhdcConnected = FALSE;`n    GUID m_LhdcContainer{};"
