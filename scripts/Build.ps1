@@ -34,8 +34,21 @@ if ($Target -eq 'Host') {
     cmake --build "$projectRoot/build/host"
     if ($LASTEXITCODE -ne 0) { throw 'Host build failed.' }
     if (-not $WithoutTests) {
-        ctest --test-dir "$projectRoot/build/host" --output-on-failure
-        if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+        # A freshly linked test binary can be held by a file scanner for a
+        # moment, and then the process does not start at all. That is not a
+        # test result, so retry it; a real assertion failure still fails here.
+        $attempt=0
+        while($true) {
+            $attempt++
+            $output=(& ctest --test-dir "$projectRoot/build/host" --output-on-failure 2>&1 | Out-String)
+            Write-Host $output
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -lt 3 -and $output -match 'Process not started') {
+                Start-Sleep -Seconds 5
+                continue
+            }
+            throw 'Tests failed.'
+        }
     }
     return
 }

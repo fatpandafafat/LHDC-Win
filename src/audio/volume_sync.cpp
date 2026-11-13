@@ -295,7 +295,7 @@ void inspect_absolute_volume() {
             // probe, so the transport refuses the channel until that teardown
             // completes. Wait the teardown out instead of downgrading a peer
             // that does support absolute volume.
-            if (error.code!=ERROR_REQ_NOT_ACEP && error.code!=ERROR_BUSY) break;
+            if (error.code!=ERROR_REQ_NOT_ACCEP && error.code!=ERROR_BUSY) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(150u<<attempt));
         } catch (const std::exception& error) { reason=error.what();break; }
     }
