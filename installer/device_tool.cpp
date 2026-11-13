@@ -14,6 +14,7 @@
 #include <algorithm>
 #include "host/json.hpp"
 #include "signature.hpp"
+#include "driver_payload.hpp"
 
 namespace {
 constexpr wchar_t standard_inf[]=L"microsoft_bluetooth_a2dp_src.inf";
@@ -232,6 +233,7 @@ int bind(const wchar_t* instance,const std::filesystem::path& supplied,const std
         lhdc::verify_package_signature(std::filesystem::absolute(supplied).parent_path(),certificate);
     }
     auto inf=std::filesystem::absolute(supplied);
+    const auto staged_dir=inf.parent_path();
     if (!restore) {
         wchar_t published[MAX_PATH]{};
         if (!SetupCopyOEMInfW(inf.c_str(),inf.parent_path().c_str(),SPOST_PATH,0,published,MAX_PATH,nullptr,nullptr)) win_error("Driver Store staging");
@@ -243,6 +245,7 @@ int bind(const wchar_t* instance,const std::filesystem::path& supplied,const std
     target.print_candidate(drivers[0]);
     const auto reboot=target.install(drivers[0],restore);
     target.snapshot("after_binding");
+    if (!restore) lhdc::verify_driver_payload(staged_dir/L"lhdc-transport.sys",L"lhdc-transport");
     const auto service=target.property(DEVPKEY_Device_Service);
     const auto active_inf=target.property(DEVPKEY_Device_DriverInfPath);
     const bool verified=equal(service,restore?L"BthA2dp":L"lhdc-transport") && equal(active_inf,inf.filename().wstring()) && target.problem()==0;

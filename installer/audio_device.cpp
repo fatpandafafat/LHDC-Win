@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include "host/json.hpp"
 #include "signature.hpp"
+#include "driver_payload.hpp"
 #include "audio/direct_pcm.hpp"
 namespace {
 constexpr GUID media_class={0x4d36e96c,0xe325,0x11ce,{0xbf,0xc1,0x08,0x00,0x2b,0xe1,0x03,0x18}};
@@ -115,6 +116,7 @@ int wmain(int argc,wchar_t** argv) {
             if (!child.open() || _wcsicmp(child.property(DEVPKEY_Device_Parent).c_str(),lhdc::target_device().instance.c_str())!=0)
                 throw std::runtime_error("Audio child does not belong to the selected headphones");
             const auto reboot=child.install(inf,L"lhdc-render");
+            lhdc::verify_driver_payload(inf.parent_path()/L"lhdc-audio.sys",L"lhdc-render");
             std::cout << "{\"event\":\"audio_child_binding\",\"binding_verified\":true,\"reboot_required\":" << (reboot?"true":"false") << "}\n";
             return reboot?3:0;
         }
