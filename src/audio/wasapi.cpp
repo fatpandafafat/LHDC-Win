@@ -9,9 +9,12 @@
 #include <ksmedia.h>
 #include <setupapi.h>
 #include <endpointvolume.h>
+#include <propsys.h>
 #include <audiopolicy.h>
 #include <wrl/implements.h>
 #include <iostream>
+#include <chrono>
+#include <thread>
 #include <syncstream>
 #include <memory>
 #include <algorithm>
@@ -151,6 +154,50 @@ void inspect_playback_ready(const std::string& endpoint,unsigned rate,unsigned b
             error.hr!=static_cast<HRESULT>(ERROR_NO_SUCH_DEVINST) && error.hr!=AUDCLNT_E_UNSUPPORTED_FORMAT) throw;
         std::cout<<"{\"event\":\"playback_ready\",\"ready\":false,\"error\":"<<json_string(error.what())<<"}"<<std::endl;
     }
+}
+// The latency Windows hands to applications for lip sync. A player delays the
+// video by this amount, so the number has to match the real path: the render
+// endpoint's own buffer plus the Bluetooth pipeline behind it.
+void inspect_endpoint_latency(const std::string& endpoint) {
+    ComApartment apartment;
+    const auto device=audio_device(endpoint);
+    const auto client=client_for(device.Get());
+    auto format=mix_format(client.Get());
+    audio_check(client->Initialize(AUDCLNT_SHAREMODE_SHARED,AUDCLNT_STREAMFLAGS_NOPERSIST|audio_convert_flags,0,0,format.get(),nullptr),"Latency probe initialization");
+    REFERENCE_TIME latency=0;
+    audio_check(client->GetStreamLatency(&latency),"Stream latency query");
+    REFERENCE_TIME default_period=0,minimum_period=0;
+    audio_check(client->GetDevicePeriod(&default_period,&minimum_period),"Device period query");
+    UINT32 buffer=0;
+    client->GetBufferSize(&buffer);
+    // A running stream reports the latency a player would see. The engine
+    // answers with the running value, so start it before reading.
+    audio_check(client->Start(),"Latency probe stream start");
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    REFERENCE_TIME running_latency=0;
+    audio_check(client->GetStreamLatency(&running_latency),"Running stream latency query");
+    client->Stop();
+    latency=running_latency;
+    // PKEY_AudioEndpointLatency {A45C254E-DF1C-4EFD-8020-67D146A850E0}, id 30, in 100 ns units.
+    const PROPERTYKEY endpoint_latency_key{
+        {0xa45c254e,0xdf1c,0x4efd,{0x80,0x20,0x67,0xd1,0x46,0xa8,0x50,0xe0}},30};
+    long property_ms=-1;
+    ComPtr<IPropertyStore> store;
+    if(SUCCEEDED(device->OpenPropertyStore(STGM_READ,store.GetAddressOf()))) {
+        PROPVARIANT value;PropVariantInit(&value);
+        if(SUCCEEDED(store->GetValue(endpoint_latency_key,&value)) && value.vt==VT_UI4)
+            property_ms=static_cast<long>(value.ulVal/10000);
+        PropVariantClear(&value);
+    }
+    const auto rate=format->nSamplesPerSec?format->nSamplesPerSec:48000;
+    std::cout<<"{\"event\":\"endpoint_latency\",\"stream_latency_ms\":"<<(latency/10000.0)
+        <<",\"device_period_ms\":"<<(default_period*1000.0/10000.0)
+        <<",\"minimum_period_ms\":"<<(minimum_period*1000.0/10000.0)
+        <<",\"buffer_frames\":"<<buffer
+        <<",\"buffer_ms\":"<<(buffer*1000.0/rate)
+        <<",\"endpoint_property_latency_ms\":"<<property_ms
+        <<",\"sample_rate\":"<<rate
+        <<",\"bits\":"<<format->wBitsPerSample<<"}"<<std::endl;
 }
 class RunningAudio {
 public:

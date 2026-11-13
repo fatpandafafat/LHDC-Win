@@ -138,7 +138,7 @@ static void profile_options(const av::Bytes& raw,std::uint32_t mtu=0) {
 static int run(int argc,char** argv) {
     std::cout << std::unitbuf;
     try {
-        if (argc<2) throw std::invalid_argument("Usage: lhdc-host [--device INSTANCE] targets | target | probe RATE BITS KBPS | hires [on|off] | inspect | connection ADDRESS | audio-connection | audio-detach | audio-status | active-bitrate | hfp-status | call-probe SECONDS | audio-devices | audio-inputs | direct-pcm | direct-formats | direct-capture SECONDS FILE | render-wav ENDPOINT WAV [REPEATS] | make-test-wav FILE [SECONDS [RATE BITS]] | encode WAV RECORDS [PAYLOAD_MTU [KBPS]] | packetize WAV RECORDS OUT_MTU KBPS | profile-check RATE BITS KBPS | profile-options HEX | configure HEX RATE BITS KBPS | decode-caps HEX");
+        if (argc<2) throw std::invalid_argument("Usage: lhdc-host [--device INSTANCE] targets | target | probe RATE BITS KBPS | hires [on|off] | inspect | connection ADDRESS | audio-connection | audio-detach | audio-status | active-bitrate | hfp-status | call-probe SECONDS | audio-devices | audio-inputs | direct-pcm | direct-formats | direct-capture SECONDS FILE | render-wav ENDPOINT WAV [REPEATS] | make-test-wav FILE [SECONDS [RATE BITS]] | encode WAV RECORDS [PAYLOAD_MTU [KBPS]] | packetize WAV RECORDS OUT_MTU KBPS | profile-check RATE BITS KBPS | profile-options HEX | configure HEX RATE BITS KBPS | decode-caps HEX | latency ENDPOINT");
         const std::string command=argv[1];
         if (command=="make-test-wav" && (argc==3 || argc==4 || argc==6 || argc==7)) {
             const std::string option=argc==7?argv[6]:"";
@@ -184,6 +184,7 @@ static int run(int argc,char** argv) {
         else if (command=="audio-devices" && argc==2) lhdc::inspect_audio_devices();
         else if (command=="audio-inputs" && argc==2) lhdc::inspect_audio_devices(true);
         else if (command=="playback-ready" && argc==5) lhdc::inspect_playback_ready(argv[2],number(argv[3]),number(argv[4]));
+        else if (command=="latency" && argc==3) lhdc::inspect_endpoint_latency(argv[2]);
         else if (command=="render-wav" && (argc==4 || argc==5)) lhdc::render_wav(argv[2],file_path(argv[3]),argc==5?number(argv[4]):1);
         else if (command=="connection" && argc==3) lhdc::inspect_connection(address(argv[2]));
 #endif

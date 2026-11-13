@@ -29,6 +29,19 @@ Profile service_profile() {
 }
 namespace {
 bool same(Profile a,Profile b) { return a.sample_rate==b.sample_rate && a.bits==b.bits && a.kbps==b.kbps; }
+// The delay the audio engine reports for this endpoint. The Bluetooth path
+// holds the audio before the earbud plays it, and a player delays the video by
+// exactly what the endpoint reports, so the number has to follow the real
+// pipeline. Without a live measurement the configured bitrate sets the
+// estimate: the widest stream sits deepest in the pipeline.
+unsigned declared_latency_ms(unsigned kbps,double queue_ms,std::int64_t pending_age_us) {
+    constexpr unsigned encode_interval_ms=20;
+    if (queue_ms>0 || pending_age_us>0) {
+        const auto measured=static_cast<unsigned>(queue_ms+pending_age_us/1000.0+encode_interval_ms+0.5);
+        return measured?measured:1u;
+    }
+    return kbps>=1000?200u:50u;
+}
 std::uint64_t clock_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -78,6 +91,8 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpWatcher& hfp) 
     // Prepare from the user's requested format, not transient idle probes.
     // Reconfigure if this render epoch actually requires a different codec.
     profile=follow_pcm(quality,state.SampleRate,state.Bits,state.FloatingPoint!=0);
+    // Give the endpoint a delay estimate before the first measurement exists.
+    pcm.publish_latency(declared_latency_ms(profile.kbps,0,0));
     const auto preparing=std::chrono::steady_clock::now();
     std::osyncstream(std::cout)<<"{\"event\":\"direct_audio_prepare\",\"epoch\":"<<state.Epoch
         <<",\"input_sample_rate\":"<<state.SampleRate<<",\"input_bits\":"<<state.Bits
@@ -241,9 +256,13 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpWatcher& hfp) 
             const auto& info=capture.state;
             max_state_us=std::max(max_state_us,elapsed_us(state_started));
             const auto log_started=std::chrono::steady_clock::now();
+            const auto queue_ms=1000.0*capture.queue.queued/byte_rate;
+            const auto latency_ms=declared_latency_ms(encoder.bitrate(),queue_ms,timing.pending_age_us);
+            pcm.publish_latency(latency_ms);
             std::ostringstream snapshot;
             snapshot << "{\"event\":\"direct_audio_progress\",\"kbps\":"<<encoder.bitrate()<<",\"packets\":" << packets << ",\"bytes\":" << bytes << ",\"nonzero_blocks\":" << nonzero_blocks
-                << ",\"queue_ms\":" << 1000.0*capture.queue.queued/byte_rate << ",\"queue_limit_ms\":"<<pcm_queue_duration_ms<<",\"queue_high_water_bytes\":"<<capture.queue.high_water
+                << ",\"queue_ms\":" << queue_ms << ",\"queue_limit_ms\":"<<pcm_queue_duration_ms<<",\"queue_high_water_bytes\":"<<capture.queue.high_water
+                << ",\"declared_latency_ms\":"<<latency_ms
                 << ",\"buffered_bytes\":" << info.BufferedBytes << ",\"produced_bytes\":" << info.ProducedBytes
                 << ",\"dropped_bytes\":" << info.DroppedBytes << ",\"dropped_bytes_total\":" << capture.dropped_bytes()+encoder_discarded_samples*2*(profile.bits/8) << ",\"overrun_recoveries\":" << capture.overrun_recoveries << ",\"latency_recoveries\":" << capture.latency_recoveries
                 << ",\"timeline_skipped_samples\":"<<discarded_frames+encoder_discarded_samples

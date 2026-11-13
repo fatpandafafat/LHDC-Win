@@ -115,6 +115,10 @@ LHDC_PCM_STATE DirectPcm::state() {
     validate(state); return state;
 }
 void DirectPcm::reset() { ULONG version=LHDC_PCM_ABI_VERSION; property(LHDC_PCM_RESET,true,&version,sizeof(version)); }
+void DirectPcm::publish_latency(unsigned milliseconds) {
+    ULONG value=milliseconds;
+    property(LHDC_PCM_LATENCY,true,&value,sizeof(value));
+}
 void DirectPcm::inspect_formats() {
     std::ostringstream output;
     struct Request { KSP_PIN pin; GUID mode; };

@@ -20,6 +20,9 @@ public:
     LHDC_PCM_STATE state();
     DirectPcmChunk read(std::size_t max_bytes=16384);
     void reset();
+    // The delay the Bluetooth path adds on top of the render buffer. The driver
+    // reports it to the audio engine so players can line the video up with it.
+    void publish_latency(unsigned milliseconds);
     void inspect_formats();
 private:
     DWORD property(ULONG id,bool set,void* data,DWORD size);

@@ -57,8 +57,23 @@ void LhdcPcmBridge::SetProtected(bool protected_content) {
     if (protected_) read_=used_=0;
     KeReleaseSpinLock(&lock_,previous);
 }
+void LhdcPcmBridge::SetLatencyMs(ULONG milliseconds) {
+    InterlockedExchange(&latency_ms_,static_cast<LONG>(milliseconds));
+}
+ULONG LhdcPcmBridge::LatencyFrames(ULONG sample_rate) const {
+    const LONG milliseconds=InterlockedCompareExchange(&const_cast<volatile LONG&>(latency_ms_),0,0);
+    if (milliseconds<=0) return 0;
+    const auto rate=sample_rate?sample_rate:48000;
+    return static_cast<ULONG>((static_cast<ULONGLONG>(milliseconds)*rate+999)/1000);
+}
 NTSTATUS LhdcPcmBridge::Property(PPCPROPERTY_REQUEST request) {
     const ULONG id=request->PropertyItem->Id;
+    if (id==LHDC_PCM_LATENCY) {
+        if (!(request->Verb&KSPROPERTY_TYPE_SET) || request->ValueSize!=sizeof(ULONG) || !request->Value)
+            return STATUS_INVALID_PARAMETER;
+        SetLatencyMs(*static_cast<ULONG*>(request->Value));
+        return STATUS_SUCCESS;
+    }
     if (id==LHDC_PCM_RESET) {
         if (!(request->Verb&KSPROPERTY_TYPE_SET) || request->ValueSize!=sizeof(ULONG) || !request->Value || *static_cast<ULONG*>(request->Value)!=LHDC_PCM_ABI_VERSION)
             return STATUS_INVALID_PARAMETER;
