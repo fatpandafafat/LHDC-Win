@@ -345,6 +345,10 @@ void serve_audio(HANDLE stop,unsigned duration_seconds) {
                 const auto path=find_direct_pcm();
                 if (path) {
                     DirectPcm pcm(*path);
+                    // An app can open the stream before any audio has played, and
+                    // the driver reports the delay at that moment. Publish the
+                    // estimate as soon as the profile is known.
+                    pcm.publish_latency(declared_latency_ms(profile.kbps,0,0));
                     transfer(pcm,stop,profile,*hfp);
                     retry=false;
                 }
