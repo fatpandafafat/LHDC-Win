@@ -191,8 +191,8 @@ void inspect_endpoint_latency(const std::string& endpoint) {
     }
     const auto rate=format->nSamplesPerSec?format->nSamplesPerSec:48000;
     std::cout<<"{\"event\":\"endpoint_latency\",\"stream_latency_ms\":"<<(latency/10000.0)
-        <<",\"device_period_ms\":"<<(default_period*1000.0/10000.0)
-        <<",\"minimum_period_ms\":"<<(minimum_period*1000.0/10000.0)
+        <<",\"device_period_ms\":"<<(default_period/10000.0)
+        <<",\"minimum_period_ms\":"<<(minimum_period/10000.0)
         <<",\"buffer_frames\":"<<buffer
         <<",\"buffer_ms\":"<<(buffer*1000.0/rate)
         <<",\"endpoint_property_latency_ms\":"<<property_ms
