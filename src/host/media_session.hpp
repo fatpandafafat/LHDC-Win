@@ -44,6 +44,8 @@ private:
     std::exception_ptr monitor_error_;
     std::uint64_t sent_bytes_=0;
     std::deque<std::unique_ptr<Transport::PendingSend>> pending_media_;
+    std::deque<std::uint32_t> pending_sizes_;
+    std::uint64_t pending_bytes_=0;
     bool finished_=false;
 };
 }

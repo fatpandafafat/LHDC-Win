@@ -278,7 +278,7 @@ void VolumeSync::check() const {if(failed_.load()) std::rethrow_exception(error_
 void inspect_absolute_volume() {
     std::string reason;
     std::optional<unsigned> initial;
-    for (unsigned attempt=0;attempt<3;++attempt) {
+    for (unsigned attempt=0;attempt<5;++attempt) {
         try {
             Transport transport(target_device().address);
             Controller controller(transport);
@@ -290,9 +290,13 @@ void inspect_absolute_volume() {
             break;
         } catch (const WindowsError& error) {
             reason=error.what();
-            // Native AVCTP teardown can lag behind PnP's disabled state.
-            if ((error.code!=ERROR_REQ_NOT_ACCEP && error.code!=ERROR_BUSY) || attempt==2) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            // Native AVCTP teardown can lag behind PnP's disabled state. The
+            // deployment disables the native controller right before this
+            // probe, so the transport refuses the channel until that teardown
+            // completes. Wait the teardown out instead of downgrading a peer
+            // that does support absolute volume.
+            if (error.code!=ERROR_REQ_NOT_ACEP && error.code!=ERROR_BUSY) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(150u<<attempt));
         } catch (const std::exception& error) { reason=error.what();break; }
     }
     std::cout<<"{\"event\":\"absolute_volume_probe\",\"supported\":"<<(initial?"true":"false")

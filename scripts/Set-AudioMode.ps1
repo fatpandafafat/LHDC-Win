@@ -460,10 +460,11 @@ try {
         $bound=$result.Before.service -eq 'lhdc-transport'
         Stop-LhdcService
         Write-DeploymentStage 'stop_service' '已停止 LHDC 服务'
-        $result.Selection=Invoke-Native $deviceTool @('select',$target) 'select-device'
+        # Read the volume mode before the device selection can change it.
         $volumeKey=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\LHDC-Win\Device')
         try { $previousVolumeMode=[int]$volumeKey.GetValue('AbsoluteVolume',0) }
         finally { $volumeKey.Dispose() }
+        $result.Selection=Invoke-Native $deviceTool @('select',$target) 'select-device'
         Write-CodecProfile
         Write-DeploymentStage 'write_profile' ("已写入编码配置 " + $SampleRate + " Hz / " + $Bits + " bit / " + $Kbps + " kbps")
         if ($bound -and -not $driversCurrent) {
@@ -517,12 +518,23 @@ try {
                 Set-Acl -LiteralPath $file -AclObject $acl
             }
         }
-        $absolute=$false
         # Probe remote volume support without changing the earbud's gain.
         # Only supported peers use AVRCP; others retain software PCM volume.
+        # The probe opens the AVRCP channel, so it has to run after the native
+        # controller has been released and after that AVCTP stack has gone.
+        $absolute=($previousVolumeMode -eq 1)
         if (Set-NativeAvrcpOwnership $true) {
+            # Disabling the native controller tears its AVCTP channel down
+            # asynchronously and the transport refuses a new channel until
+            # that teardown completes. Give it time before probing.
+            Start-Sleep -Milliseconds 1500
             $result.VolumeProbe=Invoke-Native $hostTool @('volume-probe') 'volume-probe'
             $absolute=[bool]$result.VolumeProbe.supported
+            if (-not $absolute -and $previousVolumeMode -eq 1 -and $result.VolumeProbe.reason -match 'Win32=71|Win32=170') {
+                # The peer did not answer in time, not that it refuses
+                # absolute volume. Keep the mode this deployment uses.
+                $absolute=$true
+            }
         }
         if (-not $absolute) { Restore-NativeAvrcp }
         Initialize-VolumeMemory $absolute $previousVolume $(if ($absolute) { $result.VolumeProbe } else { $null })

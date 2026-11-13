@@ -117,16 +117,27 @@ SendTiming MediaSession::send(std::span<const std::uint8_t> sdu) {
     SendTiming timing;
     // Submit in RTP order and retire the oldest first. The shared window bounds
     // user buffers and driver requests while Bluetooth completions are delayed.
-    if (pending_media_.size()==LHDC_MEDIA_SEND_WINDOW) {
+    // The window is measured in audio time rather than in packets: a 1000 kbps
+    // stream submits about 190 packets per second, so a fixed packet count
+    // covers far less time at a high bitrate than at a low one. Keeping the
+    // depth in milliseconds lets a slow Bluetooth completion settle inside
+    // the window instead of stalling the media thread and dropping PCM.
+    const auto depth_bytes=static_cast<std::uint64_t>(profile_.kbps)*1000ull/8ull*LHDC_MEDIA_SEND_DEPTH_MS/1000ull;
+    while (pending_media_.size()>=LHDC_MEDIA_SEND_WINDOW &&
+           (pending_bytes_>=depth_bytes || pending_media_.size()>=LHDC_MEDIA_SEND_WINDOW_MAX)) {
         // Include time already spent in the send window. A stalled media
         // channel must be rebuilt instead of feeding seconds-old RTP later.
         timing=pending_media_.front()->wait(media_send_timeout_ms);
         pending_media_.pop_front();
+        pending_bytes_-=pending_sizes_.front();
+        pending_sizes_.pop_front();
     }
     auto request=transport_.begin_send(sdu,LHDC_CHANNEL_MEDIA);
     timing.submit_us=request->timing().submit_us;
     timing.pending=timing.pending || request->timing().pending;
     pending_media_.push_back(std::move(request));
+    pending_sizes_.push_back(static_cast<std::uint32_t>(sdu.size()));
+    pending_bytes_+=sdu.size();
     for (const auto& pending:pending_media_)
         timing.pending_age_us=std::max(timing.pending_age_us,pending->pending_age_us());
     sent_bytes_+=sdu.size();
@@ -142,6 +153,8 @@ SessionCompletion MediaSession::finish() {
     while (!pending_media_.empty()) {
         pending_media_.front()->wait(media_send_timeout_ms);
         pending_media_.pop_front();
+        pending_bytes_-=pending_sizes_.front();
+        pending_sizes_.pop_front();
     }
     volume_.reset();
     stop_monitor();

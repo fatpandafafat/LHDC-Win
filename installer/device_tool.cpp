@@ -192,9 +192,10 @@ void select_target(const wchar_t* instance) {
     const auto previous_status=RegGetValueW(key,nullptr,L"InstanceId",RRF_RT_REG_SZ,nullptr,previous,&previous_size);
     if (previous_status!=ERROR_SUCCESS && previous_status!=ERROR_FILE_NOT_FOUND) { RegCloseKey(key);throw lhdc::WindowsError("Previous device selection",previous_status); }
     if (previous_status==ERROR_FILE_NOT_FOUND || !equal(previous,instance)) {
-        const DWORD disabled=0;
-        status=RegSetValueExW(key,L"AbsoluteVolume",0,REG_DWORD,reinterpret_cast<const BYTE*>(&disabled),sizeof(disabled));
-        if (status!=ERROR_SUCCESS) { RegCloseKey(key);throw lhdc::WindowsError("New device volume mode",status); }
+        // A different peer needs its own controller claim. The volume mode is
+        // not reset here: the deployment probes the new peer and writes the
+        // mode it found, and clearing it here would drop a working absolute
+        // volume deployment to software volume on every reapply.
         status=RegDeleteValueW(key,L"NativeAvrcpInstance");
         if (status!=ERROR_SUCCESS && status!=ERROR_FILE_NOT_FOUND) { RegCloseKey(key);throw lhdc::WindowsError("New device controller reset",status); }
     }

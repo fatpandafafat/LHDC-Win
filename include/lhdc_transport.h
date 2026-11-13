@@ -4,8 +4,17 @@
 #define LHDC_AVDTP_PSM 0x0019u
 #define LHDC_AVCTP_PSM 0x0017u
 #define LHDC_MAX_SDU 4096u
-/* Bound outstanding Bluetooth transfers independently of the PCM queue. */
+/* Bound outstanding Bluetooth transfers independently of the PCM queue.
+   The service keeps at least this many packets in flight and grows the window
+   until the outstanding media covers LHDC_MEDIA_SEND_DEPTH_MS of audio at the
+   negotiated bitrate. A 1000 kbps LHDC stream submits about 190 packets per
+   second, so four packets only cover 21 ms there; a slow Bluetooth completion
+   outruns that depth, the media thread stalls, and the dropped PCM surfaces
+   as audible stutter. Measuring the depth in time keeps a low bitrate at its
+   previous shallow window while a high bitrate gains the room it needs. */
 #define LHDC_MEDIA_SEND_WINDOW 4u
+#define LHDC_MEDIA_SEND_DEPTH_MS 96u
+#define LHDC_MEDIA_SEND_WINDOW_MAX 32u
 #define LHDC_CHANNEL_SIGNAL 1u
 #define LHDC_CHANNEL_MEDIA 2u
 #define LHDC_CHANNEL_AVRCP 3u
