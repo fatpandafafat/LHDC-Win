@@ -100,6 +100,10 @@ static VOID QueryAclMode(CHANNEL_CONTEXT* slot)
     DEVICE_CONTEXT* ctx = slot->DeviceContext;
     struct _BRB_ACL_GET_MODE brb;
     NTSTATUS status;
+    // The mode query is a synchronous Bluetooth request. It must never run on
+    // the open path: the link is not active yet there, the request waits for
+    // the timeout, and the open then fails with the device no longer ready.
+    if (!WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, TRACE_TRANSPORT)) return;
     RtlZeroMemory(&brb, sizeof(brb));
     ctx->Profile.BthInitializeBrb((PBRB)&brb, BRB_ACL_GET_MODE);
     brb.BtAddress = slot->Info.RemoteAddress;
@@ -110,7 +114,6 @@ static VOID QueryAclMode(CHANNEL_CONTEXT* slot)
     WdfSpinLockAcquire(ctx->Lock);
     slot->Info.AclMode = (ULONG)brb.AclMode;
     WdfSpinLockRelease(ctx->Lock);
-    if (!WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, TRACE_TRANSPORT)) return;
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_TRANSPORT,
         "MEDIA ACL mode=%u status=%!STATUS! bt=0x%08x", brb.AclMode, status, brb.Hdr.Status);
 }
@@ -579,9 +582,10 @@ VOID IoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength, size_t inLe
         status = WdfRequestRetrieveOutputBuffer(request, sizeof(*info), (PVOID*)&info, NULL);
         if (!NT_SUCCESS(status)) goto fail;
         WdfSpinLockAcquire(ctx->Lock); *info = slot->Info; WdfSpinLockRelease(ctx->Lock);
-        // The link mode is captured when the channel opens. Querying it here
-        // would send a synchronous Bluetooth request from the media queue and
-        // occupy one of the in-flight transfer slots.
+        // The link mode is captured after the media channel is open. Querying
+        // it here would send a synchronous Bluetooth request from the media
+        // queue and occupy one of the in-flight transfer slots.
+        if (info->ChannelId == LHDC_CHANNEL_MEDIA && info->Connected) QueryAclMode(slot);
         WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(*info));
         return;
     }
@@ -606,7 +610,6 @@ VOID IoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength, size_t inLe
             (slot->Info.ChannelId != LHDC_CHANNEL_MEDIA || ctx->Channels[LHDC_CHANNEL_SIGNAL - 1].Info.Connected);
         WdfSpinLockRelease(ctx->Lock);
         if (!available) { status = STATUS_DEVICE_BUSY; goto fail; }
-        if (slot->Info.ChannelId == LHDC_CHANNEL_MEDIA) QueryAclMode(slot);
         WdfSpinLockAcquire(ctx->Lock);
         available = ctx->Ready && !ctx->SessionClosing;
         if (available) {

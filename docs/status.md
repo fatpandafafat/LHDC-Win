@@ -36,6 +36,75 @@ OPPO Enco X4，Intel 蓝牙适配器，48 kHz／24 bit，2026-11-13。
 - 并发 16 时队列水位降到约 20 ms 以内且裁剪归零 → 并发是主因，保留该值。
 - `driver_pending` 长期远低于上限而延迟仍高 → 瓶颈在空口，驱动侧只能减负，需转向链路档位与码率。
 
+### 部署过程记录（r10）
+
+传输驱动 0.8.8.3 已正确装上并与组件逐字节一致（`lhdc-transport.inf_amd64_90bb8bd2dc7e201e`，27912 字节，sha256 前缀 `977FD8B3`）。音频驱动代码未改，INF 保持 0.8.8.2，Windows 按 INF 内容复用既有驱动包。
+
+部署过程暴露两处流程问题，都不是编码问题：
+
+1. **音频子设备无法通过子列表移除**。`lhdc-host audio-detach` 失败：`Transport completion (IOCTL=0x226000, NTSTATUS=0xc000000d) failed, Win32=87`，即向蓝牙栈请求移除子设备时被判定为参数无效。改用 `lhdc-device restore` 先把绑定交还微软 A2DP（绑定重建会连带移除子设备），随后部署才能继续。以后更新驱动若再次卡在同一步，先走"交还 A2DP 再安装"这条路。
+2. **Windows 播放端点未激活**。绑定与驱动都成功，KS filter 可用（`direct_formats` 返回 48000/16/2ch，`direct_pcm` 显示 epoch=2 且格式已协商），系统里也存在 `耳机 (LHDC Headphones)` 端点且 PnP 状态为 OK，但 `IMMDeviceEnumerator` 以 `DEVICE_STATE_ACTIVE` 枚举时看不到它，`lhdc-host audio-devices` 因此返回空，部署脚本的格式验证随之失败。此时服务反复报 `LHDC headphone volume endpoint is unavailable`。判断为多次绑定切换与服务停止之后音频端点栈的陈旧状态（r9 时代同样是在重启后才完成验收），需重启电脑后复核；若重启后端点仍不出现，再回头怀疑 r10 驱动本身。
+
+## 0.8.8-r11：修复媒体通道打开回归，定位 1000 kbps 丢音频的真正来源（本机执行）
+
+本机排查记录，OPPO Enco X4，Intel 蓝牙适配器，48 kHz／16 bit，2026-11-13。
+
+### r10 的打开回归：现象与定位
+
+r10 部署后服务建立不起媒体通道：不再产生 `direct_audio_progress`，日志持续输出
+`Transport completion (IOCTL=0x22e004, NTSTATUS=0xc00000d0) failed, Win32=71`。
+把 IOCTL 码按 `CTL_CODE` 拆开，`0x22e004` 正是 `IOCTL_LHDC_OPEN`（设备类型 0x22、功能号 0x801、读写访问、BUFFERED），
+`0xc00000d0` 是 `STATUS_DEVICE_NOT_READY`。重启服务、关闭 EncoDeck、重新部署组件都不改变这一结果。
+
+驱动对 OPEN 只有两处拒绝条件：`ctx->Ready` 为假（设备被电源管理挂到 D3）或 `ctx->SessionClosing` 为真。
+用独立探针在服务停止时直接对驱动发 `IOCTL_LHDC_QUERY_INFO`：三个通道都正常返回 112 字节、`Header.Version=4`、
+`Header.Size=112`，说明驱动状态与 ABI 都健康，且 `Ready` 为真、`SessionClosing` 为假。
+服务运行期间同一个查询却失败，服务日志里也没有出现 `Transport info ABI mismatch`，
+因此差异不在协议层，而在服务持有句柄期间设备所处的状态。
+
+差异来自 r10 的一处改动。链路模式查询（`BRB_ACL_GET_MODE`）在 r9 起一直发生在媒体通道打开**之后**；
+r10 把它提前到打开**之前**，并且去掉了"没有 WPP 订阅就跳过"的前置判断，于是这次同步 BRB 一定会发出。
+链路尚未进入活动状态时该请求要等到超时才返回，打开流程被拖住，随后以设备未就绪失败；
+r9 之所以长期稳定，正是因为没有订阅时那次查询会被整段跳过。
+
+### 修复
+
+查询移回媒体通道打开之后（`IOCTL_LHDC_QUERY_INFO` 分支，媒体通道且已连接时执行），
+打开路径上不再有同步请求。传输驱动包版本升到 0.8.8.6。修复后服务可正常建立媒体通道，
+每秒进度记录里的 `acl_mode` / `inflight_brbs` / `driver_pending` / `brb_max_latency_us` /
+`brb_last_latency_us` / `brb_completions` 全部恢复输出。
+
+### 1000 kbps 丢音频的真实来源
+
+以并发 4、1000 kbps、连续 10 分钟真实音频测量（`build\tooling\measure-run.ps1`，
+逐分钟分段见 `build\lhdc-r10\run-clean-10min.log`）：
+
+| 指标 | 实测 |
+| --- | --- |
+| 包率 | 199 包/秒（1000 kbps 每包一帧，需要约 200 包/秒） |
+| BRB 提交到完成耗时 | 在 0.5 ms 与 18 ms 之间**周期性摆动** |
+| 驱动侧在途数 | 中位 2，最大 3（上限 4） |
+| 在途包龄中位数 | 0.1 ms（低延迟段）↔ 58 ms（高延迟段） |
+| PCM 队列 | 中位 70 ms，p95 105 ms，上限 120 ms |
+| 丢弃率 | 与延迟同步：低延迟段 0～0.65%，高延迟段 4.6～5.2% |
+
+即包率本身达标，丢音频发生在**无线侧的周期性抖动**到来时：4 个在途名额在 18 ms 的抖动窗口内来不及周转，
+队列顶到 120 ms 上限后被裁剪。写完成耗时中位数仍只有约 0.1 ms，软件提交路径不是瓶颈。
+
+对照实验支持同一结论：服务在 r10 回归期间反复失败重试，队列与在途状态被拖住时，同一并发值下
+BRB 延迟中位数是 23～26 ms、丢弃率 17%；把设备状态清空后，同样的并发值延迟回到 1～4 ms、丢弃率降到 1.6%。
+因此"并发不足"与"状态被拖住"必须分开看：**并发 4 不足以吸收 18 ms 的周期性抖动**，而回归本身又制造了额外拥塞。
+
+### 调整并发需要重启系统
+
+并发上限由 `HKLM\SOFTWARE\LHDC-Win\MediaInflightBrbs` 控制，驱动在创建设备时读取一次。本机实测：
+
+- `pnputil /restart-device` 对该蓝牙软设备返回"需要重新启动系统才能完成配置操作"；
+- 从 DriverStore 删除驱动包不会卸载已经加载的驱动，设备反而回退到系统自带驱动，绑定需要重建；
+- 重新发布新的驱动包（`DriverVer` 递增）会让设备重新创建设备并读到新的注册表值。
+
+因此每一档并发都需要一次系统重启，扫描按 4 → 8 → 16 逐档进行。
+
 ## 0.8.8-r9：撤回端点延迟上报，保留实测与日志（本机执行，听音确认由用户完成）
 
 本机排查记录，OPPO Enco X4，Intel 蓝牙适配器，48 kHz／16 bit，2026-11-13。
