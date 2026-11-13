@@ -1,5 +1,16 @@
 # 更新日志
 
+## 0.8.8-r10 — 2026-11-13
+
+蓝牙发送路径的并发上限改为可调，并加入驱动侧诊断数据。
+
+- 定位 1000 kbps 丢音频的证据（本机 14076 条历史播放记录）：丢失全部发生在服务侧 PCM 队列裁剪上，驱动环形缓冲一次都没丢过；各码率实测包率都达标（400/500 kbps 约 101 包/秒，900/1000 kbps 约 201 包/秒），写完成耗时中位数只有约 0.1 ms，说明软件提交路径不慢；1000 kbps 的 13 段会话 100% 出现裁剪，累计丢 21 MB（约 115 秒音频，丢失率 4.4%），队列反复顶到 120 ms 上限，900 kbps 只有 39%。
+- 驱动此前把蓝牙在途传输数写死为 4：WDF 队列的 `NumberOfPresentedRequests` 对并行队列有效，请求在传输完成前一直占着配额，因此同时进入蓝牙栈的最多只有 4 个 BRB；而服务侧以为在途约 19 个包，其余堵在驱动队列里，`pending_age` 因此混入了排队时间。r10 把该上限改为读取注册表 `HKLM\SOFTWARE\LHDC-Win\MediaInflightBrbs`（缺省 4，非法值回退），**默认行为与 r9 完全一致**，可按 4/8/12/16 扫描取值；队列在创建设备时固定，改值后需重载驱动才生效。
+- 驱动新增诊断并经 `LHDC_INFO` 暴露：协商到的蓝牙链路模式 `AclMode`、驱动侧真实在途数 `PendingRequests`、每次 BRB 提交到完成的真实耗时（`MaxBrbLatencyUs` 与 `LastBrbLatencyUs`）以及累计完成数 `BrbCompletions`。服务每秒读取一次并写入 `direct_audio_progress` 的 `acl_mode` / `inflight_brbs` / `driver_pending` / `brb_max_latency_us` / `brb_last_latency_us` / `brb_completions`。
+- 移除媒体通道 `QUERY_INFO` 中的链路模式查询：它在媒体队列的同步域内发一次同步 BRB，会占用一个宝贵的在途名额；链路模式改为在通道打开时采集一次。
+- ABI 从 3 升到 4，`LHDC_INFO` 从 80 字节增至 112 字节，驱动与服务必须同版本部署；混装时服务会以 `Transport info ABI mismatch` 明确失败，不会静默错配。
+- 传输驱动包版本升到 0.8.8.3（音频 INF 未改动，保持 0.8.8.2）。
+
 ## 0.8.8-r9 — 2026-11-13
 
 撤回端点延迟上报，保留管线延迟的实测与日志。

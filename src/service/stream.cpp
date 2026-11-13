@@ -257,6 +257,11 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpWatcher& hfp) 
             const auto log_started=std::chrono::steady_clock::now();
             const auto queue_ms=1000.0*capture.queue.queued/byte_rate;
             const auto latency_ms=pipeline_latency_ms(encoder.bitrate(),queue_ms,timing.pending_age_us);
+            // Driver-side view of the Bluetooth path: the negotiated link mode,
+            // the in-flight transfer limit and how long a transfer really took.
+            LHDC_INFO link{};bool link_known=false;
+            try { link=session.channel_info();link_known=true; }
+            catch (const std::exception&) { link_known=false; }
             std::ostringstream snapshot;
             snapshot << "{\"event\":\"direct_audio_progress\",\"kbps\":"<<encoder.bitrate()<<",\"packets\":" << packets << ",\"bytes\":" << bytes << ",\"nonzero_blocks\":" << nonzero_blocks
                 << ",\"queue_ms\":" << queue_ms << ",\"queue_limit_ms\":"<<pcm_queue_duration_ms<<",\"queue_high_water_bytes\":"<<capture.queue.high_water
@@ -269,6 +274,12 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpWatcher& hfp) 
                 << ",\"max_send_us\":" << max_send_us << ",\"max_submit_us\":"<<max_submit_us<<",\"max_io_wait_us\":"<<max_io_wait_us<<",\"max_completion_us\":"<<max_completion_us
                 << ",\"pending_age_us\":"<<timing.pending_age_us<<",\"max_pending_age_us\":"<<max_pending_age_us
                 << ",\"send_stalls\":"<<send_stalls<<",\"max_hfp_check_us\":"<<max_hfp_check_us<<",\"max_read_gap_us\":" << capture.max_read_gap_us << ",\"max_read_us\":" << capture.max_read_us
+                << ",\"acl_mode\":" << (link_known?link.AclMode:0u)
+                << ",\"inflight_brbs\":" << (link_known?link.InflightBrbs:0u)
+                << ",\"driver_pending\":" << (link_known?link.PendingRequests:0u)
+                << ",\"brb_max_latency_us\":" << (link_known?link.MaxBrbLatencyUs:0ull)
+                << ",\"brb_last_latency_us\":" << (link_known?link.LastBrbLatencyUs:0ull)
+                << ",\"brb_completions\":" << (link_known?link.BrbCompletions:0ull)
                 << ",\"max_encode_us\":" << max_encode_us << ",\"max_wait_us\":" << max_wait_us << ",\"max_report_us\":" << max_report_us << ",\"max_profile_us\":" << max_profile_us << ",\"max_state_us\":" << max_state_us << ",\"max_log_us\":" << max_log_us << "}";
             progress.submit(snapshot.str());
             max_log_us=std::max(max_log_us,elapsed_us(log_started));

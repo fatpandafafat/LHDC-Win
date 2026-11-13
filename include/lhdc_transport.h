@@ -1,6 +1,6 @@
 #pragma once
 /* Fixed-width, pointer-free ABI shared by the host and KMDF probe. */
-#define LHDC_ABI_VERSION 3u
+#define LHDC_ABI_VERSION 4u
 #define LHDC_AVDTP_PSM 0x0019u
 #define LHDC_AVCTP_PSM 0x0017u
 #define LHDC_MAX_SDU 4096u
@@ -15,6 +15,14 @@
 #define LHDC_MEDIA_SEND_WINDOW 4u
 #define LHDC_MEDIA_SEND_DEPTH_MS 96u
 #define LHDC_MEDIA_SEND_WINDOW_MAX 32u
+/* Bluetooth transfers the transport driver may hand to the stack at once.
+   This is a driver-side limit and is independent of the service window
+   above: the service may believe that many packets are outstanding while
+   only this many BRBs are actually in flight. The value is read from the
+   registry so one build can be swept across the range. */
+#define LHDC_TRANSPORT_INFLIGHT_DEFAULT 4u
+#define LHDC_TRANSPORT_INFLIGHT_MAX 64u
+#define LHDC_TRANSPORT_INFLIGHT_REGISTRY L"MediaInflightBrbs"
 #define LHDC_CHANNEL_SIGNAL 1u
 #define LHDC_CHANNEL_MEDIA 2u
 #define LHDC_CHANNEL_AVRCP 3u
@@ -63,6 +71,16 @@ typedef struct LHDC_INFO {
     ULONGLONG ReceivedBytes;
     ULONG PendingRequests;
     ULONG CancelledRequests;
+    /* Diagnostics for the media path. AclMode is the Bluetooth link mode
+       read when the channel opened; MaxBrbLatencyUs is the slowest observed
+       submission-to-completion time of a media BRB, LastBrbLatencyUs the
+       most recent one and BrbCompletions counts the completed transfers.
+       InflightBrbs is the driver-side concurrency limit in force. */
+    ULONG AclMode;
+    ULONG InflightBrbs;
+    ULONGLONG MaxBrbLatencyUs;
+    ULONGLONG LastBrbLatencyUs;
+    ULONGLONG BrbCompletions;
 } LHDC_INFO;
 typedef struct LHDC_SDU_HEADER {
     LHDC_HEADER Header;

@@ -22,7 +22,7 @@ void inspect_targets();
 void inspect_target();
 bool absolute_volume_enabled();
 void claim_avrcp_controller();
-static_assert(sizeof(LHDC_INFO)==80 && sizeof(LHDC_SDU_HEADER)==16 && sizeof(LHDC_OPEN_INPUT)==24 && sizeof(LHDC_CHANNEL_INPUT)==16);
+static_assert(sizeof(LHDC_INFO)==112 && sizeof(LHDC_SDU_HEADER)==16 && sizeof(LHDC_OPEN_INPUT)==24 && sizeof(LHDC_CHANNEL_INPUT)==16);
 class WindowsError : public std::runtime_error {
 public:
     WindowsError(const char* operation,DWORD error):std::runtime_error(std::string(operation)+" failed, Win32="+std::to_string(error)),code(error){}

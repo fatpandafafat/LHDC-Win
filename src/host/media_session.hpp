@@ -29,6 +29,10 @@ public:
     SendTiming send(std::span<const std::uint8_t> sdu);
     SessionCompletion finish();
     const LHDC_INFO& media_info() const { return media_info_; }
+    // Live state of the media channel, including the driver's in-flight
+    // transfer limit, the negotiated link mode and the observed Bluetooth
+    // transfer latency.
+    LHDC_INFO channel_info();
 private:
     void stop_monitor();
     Transport transport_;

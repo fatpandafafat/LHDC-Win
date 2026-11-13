@@ -143,6 +143,11 @@ SendTiming MediaSession::send(std::span<const std::uint8_t> sdu) {
     sent_bytes_+=sdu.size();
     return timing;
 }
+LHDC_INFO MediaSession::channel_info() {
+    // The driver answers this from its own state; it does not touch the
+    // Bluetooth link, so it is safe to poll while media packets flow.
+    return transport_.info(LHDC_CHANNEL_MEDIA);
+}
 void MediaSession::stop_monitor() {
     stop_.store(true);
     if (!monitor_.joinable()) return;

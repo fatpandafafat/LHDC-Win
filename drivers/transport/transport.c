@@ -30,6 +30,7 @@ struct DEVICE_CONTEXT {
     CHANNEL_CONTEXT Channels[LHDC_CHANNEL_COUNT];
     BOOLEAN Ready;
     BOOLEAN SessionClosing;
+    ULONG InflightBrbs;
 };
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 typedef struct REQUEST_CONTEXT {
@@ -39,6 +40,7 @@ typedef struct REQUEST_CONTEXT {
     PVOID Output;
     ULONG Capacity;
     ULONG TxBytes;
+    ULONGLONG SubmitTickUs;
 } REQUEST_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(REQUEST_CONTEXT, GetRequestContext)
 
@@ -93,19 +95,49 @@ static NTSTATUS WakeSignalLink(DEVICE_CONTEXT* ctx, BTH_ADDR address)
         mode.AclMode, status, wake.Hdr.BtStatus, (ULONG)((KeQueryInterruptTime() - started) / 10));
     return status;
 }
-static VOID TraceAclMode(CHANNEL_CONTEXT* slot)
+static VOID QueryAclMode(CHANNEL_CONTEXT* slot)
 {
     DEVICE_CONTEXT* ctx = slot->DeviceContext;
     struct _BRB_ACL_GET_MODE brb;
     NTSTATUS status;
-    if (!WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, TRACE_TRANSPORT)) return;
     RtlZeroMemory(&brb, sizeof(brb));
     ctx->Profile.BthInitializeBrb((PBRB)&brb, BRB_ACL_GET_MODE);
     brb.BtAddress = slot->Info.RemoteAddress;
     brb.AclMode = ACL_DISCONNECTED;
     status = SendBrbSync(ctx, (PBRB)&brb, sizeof(brb));
+    // Keep the negotiated link mode with the channel state so the service can
+    // report it without asking the driver for a synchronous BRB.
+    WdfSpinLockAcquire(ctx->Lock);
+    slot->Info.AclMode = (ULONG)brb.AclMode;
+    WdfSpinLockRelease(ctx->Lock);
+    if (!WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, TRACE_TRANSPORT)) return;
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_TRANSPORT,
         "MEDIA ACL mode=%u status=%!STATUS! bt=0x%08x", brb.AclMode, status, brb.Hdr.Status);
+}
+static ULONG ReadInflightBrbs(void)
+{
+    // The concurrency limit is fixed when the queue is created, so the value
+    // is read once per device start. An invalid or missing value keeps the
+    // shipped default.
+    UNICODE_STRING path,name;
+    OBJECT_ATTRIBUTES attributes;
+    HANDLE key;
+    union { KEY_VALUE_PARTIAL_INFORMATION info; BYTE raw[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION,Data)+sizeof(ULONG)]; } buffer;
+    ULONG configured=LHDC_TRANSPORT_INFLIGHT_DEFAULT;
+    ULONG size=0;
+    RtlInitUnicodeString(&path,L"\\Registry\\Machine\\SOFTWARE\\LHDC-Win");
+    InitializeObjectAttributes(&attributes,&path,OBJ_KERNEL_HANDLE|OBJ_CASE_INSENSITIVE,NULL,NULL);
+    auto status=ZwOpenKey(&key,KEY_QUERY_VALUE,&attributes);
+    if (status==STATUS_OBJECT_NAME_NOT_FOUND || status==STATUS_OBJECT_PATH_NOT_FOUND) return configured;
+    if (!NT_SUCCESS(status)) return configured;
+    RtlInitUnicodeString(&name,LHDC_TRANSPORT_INFLIGHT_REGISTRY);
+    status=ZwQueryValueKey(key,&name,KeyValuePartialInformation,buffer.raw,sizeof(buffer.raw),&size);
+    ZwClose(key);
+    if (!NT_SUCCESS(status)) return configured;
+    if (buffer.info.Type!=REG_DWORD || buffer.info.DataLength!=sizeof(ULONG)) return configured;
+    RtlCopyMemory(&configured,buffer.info.Data,sizeof(configured));
+    if (configured<1 || configured>LHDC_TRANSPORT_INFLIGHT_MAX) return LHDC_TRANSPORT_INFLIGHT_DEFAULT;
+    return configured;
 }
 static NTSTATUS CloseChannel(CHANNEL_CONTEXT* slot, L2CAP_CHANNEL_HANDLE expected)
 {
@@ -279,10 +311,20 @@ NTSTATUS DeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     queue.EvtIoStop = IoStop;
     status = WdfIoQueueCreate(device, &queue, WDF_NO_OBJECT_ATTRIBUTES, &ctx->Queue);
     if (!NT_SUCCESS(status)) return status;
+    ctx->InflightBrbs = ReadInflightBrbs();
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_TRANSPORT,
+        "Media inflight BRBs=%u", ctx->InflightBrbs);
     for (i = 0; i < LHDC_CHANNEL_COUNT; ++i) {
         const BOOLEAN media = i == LHDC_CHANNEL_MEDIA - 1;
         WDF_IO_QUEUE_CONFIG_INIT(&queue, media ? WdfIoQueueDispatchParallel : WdfIoQueueDispatchSequential);
-        if (media) queue.Settings.Parallel.NumberOfPresentedRequests = LHDC_MEDIA_SEND_WINDOW;
+        if (media) {
+            // The framework delivers at most this many media requests to the
+            // driver at once. Every delivered request stays outstanding until
+            // its Bluetooth transfer completes, so this bounds the number of
+            // transfers the Bluetooth stack carries concurrently.
+            queue.Settings.Parallel.NumberOfPresentedRequests = ctx->InflightBrbs;
+            ctx->Channels[i].Info.InflightBrbs = ctx->InflightBrbs;
+        }
         queue.EvtIoDeviceControl = IoControl;
         queue.EvtIoStop = IoStop;
         WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
@@ -439,6 +481,13 @@ VOID BrbComplete(WDFREQUEST request, WDFIOTARGET target,
             if (remoteGone) status = STATUS_CONNECTION_DISCONNECTED;
         } else if (req->Ioctl == IOCTL_LHDC_SEND) {
             slot->Info.CompletedBytes += req->Brb.BrbL2caAclTransfer.BufferSize;
+            if (req->SubmitTickUs) {
+                const ULONGLONG completed_us=(ULONGLONG)(KeQueryInterruptTime()/10);
+                const ULONGLONG latency=completed_us>req->SubmitTickUs?completed_us-req->SubmitTickUs:0;
+                slot->Info.LastBrbLatencyUs=latency;
+                if (latency>slot->Info.MaxBrbLatencyUs) slot->Info.MaxBrbLatencyUs=latency;
+                ++slot->Info.BrbCompletions;
+            }
         } else if (req->Ioctl == IOCTL_LHDC_RECEIVE) {
             LHDC_SDU_HEADER* output = req->Output;
             ULONG bytes = req->Brb.BrbL2caAclTransfer.BufferSize;
@@ -530,7 +579,9 @@ VOID IoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength, size_t inLe
         status = WdfRequestRetrieveOutputBuffer(request, sizeof(*info), (PVOID*)&info, NULL);
         if (!NT_SUCCESS(status)) goto fail;
         WdfSpinLockAcquire(ctx->Lock); *info = slot->Info; WdfSpinLockRelease(ctx->Lock);
-        if (info->ChannelId == LHDC_CHANNEL_MEDIA && info->Connected) TraceAclMode(slot);
+        // The link mode is captured when the channel opens. Querying it here
+        // would send a synchronous Bluetooth request from the media queue and
+        // occupy one of the in-flight transfer slots.
         WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(*info));
         return;
     }
@@ -555,7 +606,7 @@ VOID IoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength, size_t inLe
             (slot->Info.ChannelId != LHDC_CHANNEL_MEDIA || ctx->Channels[LHDC_CHANNEL_SIGNAL - 1].Info.Connected);
         WdfSpinLockRelease(ctx->Lock);
         if (!available) { status = STATUS_DEVICE_BUSY; goto fail; }
-        if (slot->Info.ChannelId == LHDC_CHANNEL_MEDIA) TraceAclMode(slot);
+        if (slot->Info.ChannelId == LHDC_CHANNEL_MEDIA) QueryAclMode(slot);
         WdfSpinLockAcquire(ctx->Lock);
         available = ctx->Ready && !ctx->SessionClosing;
         if (available) {
@@ -632,6 +683,9 @@ VOID IoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength, size_t inLe
         IOCTL_INTERNAL_BTH_SUBMIT_BRB, memory, NULL, NULL, NULL, NULL, NULL);
     if (!NT_SUCCESS(status)) goto fail;
     WdfRequestSetCompletionRoutine(request, BrbComplete, slot);
+    // Timestamp the submission so the completion path can report how long a
+    // Bluetooth transfer actually took.
+    req->SubmitTickUs = (ULONGLONG)(KeQueryInterruptTime()/10);
     WDF_REQUEST_SEND_OPTIONS_INIT(&options, WDF_REQUEST_SEND_OPTION_TIMEOUT);
     WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&options,
         code == IOCTL_LHDC_RECEIVE ? WDF_REL_TIMEOUT_IN_SEC(3) : WDF_REL_TIMEOUT_IN_SEC(8));
