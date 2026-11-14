@@ -12,7 +12,7 @@ using System.Windows.Threading;
 namespace Lhdc.ControlPanel;
 
 public partial class MainWindow : Window {
-    private static readonly int[] QualityBitrates = [64,160,192,256,320,400,500,600,900,1000];
+    private static readonly int[] QualityBitrates = [64,160,192,256,320,400,500,600,700,800,900,1000];
     private NativeClient? client;
     private JsonArray? rates, bitDepths;
     private string peerCaps = "", service = "", logFile = "";
@@ -94,6 +94,10 @@ public partial class MainWindow : Window {
     private void UpdateFormats() {
         var supportedRates = rates?.Select(r => r!["sample_rate"]!.GetValue<int>()).ToArray() ?? [44100,48000,96000,192000];
         var supportedDepths = bitDepths?.Select(b => b!.GetValue<int>()).ToArray() ?? [16,24];
+        // Another earphone may not offer the format that is installed here, so the selection
+        // snaps to one it does offer instead of leaving the list without a selected item.
+        if (!supportedRates.Contains(sampleRate)) sampleRate = supportedRates.Contains(48000) ? 48000 : supportedRates[0];
+        if (!supportedDepths.Contains(bits)) bits = supportedDepths.Contains(16) ? 16 : supportedDepths[0];
         updatingParameters = true;
         try {
             SampleRateBox.ItemsSource = supportedRates.Select(r => new Choice(r, $"{(r / 1000.0).ToString("0.#", CultureInfo.InvariantCulture)} kHz")).ToArray();
@@ -124,8 +128,14 @@ public partial class MainWindow : Window {
         client.DeviceInstance = choice.Instance;
         peerCaps = ""; rates = null; bitDepths = null; mediaMtu = 0;
         headphoneConnected = false; hiResEnabled = null;
-        sampleRate = 48000; bits = 16; preferredKbps = 400;
-        formatEdited = true; bitrateEdited = true; modeEdited = false;
+        // The installed profile belongs to the machine, not to one earphone, so it is the
+        // starting point here as well. Resetting to 400 kbps would show a rate that is not
+        // in use and would write it back when the parameters are applied.
+        var installed = NativeClient.InstalledProfile();
+        sampleRate = installed?.SampleRate ?? 48000;
+        bits = installed?.Bits ?? 16;
+        preferredKbps = CanonicalBitrate(sampleRate, installed?.Kbps ?? 400);
+        formatEdited = false; bitrateEdited = false; modeEdited = false;
         UpdateFormats(); UpdateBitrates();
         await Operate(async () => {
             await Refresh();

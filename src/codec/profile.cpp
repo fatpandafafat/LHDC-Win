@@ -4,9 +4,9 @@
 namespace lhdc {
 namespace {
 // Rates the pinned encoder cannot express through its own table. They are
-// produced by targeting a bitrate directly. Only the first one is offered
-// for now: the next one waits until this one is proven on real hardware.
-constexpr std::uint32_t manual_rates[] = {600};
+// produced by targeting a bitrate directly. The adaptive ladder keeps the
+// table, so these are manual choices only.
+constexpr std::uint32_t manual_rates[] = {600,700,800};
 }
 std::vector<std::uint32_t> bitrates(std::uint32_t rate) {
     if (rate!=44100 && rate!=48000 && rate!=96000 && rate!=192000)

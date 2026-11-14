@@ -88,20 +88,30 @@ int main() {
         // A rate outside the encoder's own table is offered next to the table
         // entries but never enters the adaptive ladder.
         require(lhdc::bitrates(48000).size()==9,"The encoder table keeps its own entries");
-        require(lhdc::selectable_bitrates(48000).size()==10,"The targeted rate is offered next to the table");
+        require(lhdc::selectable_bitrates(48000).size()==12,"The targeted rates are offered next to the table");
         const auto encoder_table=lhdc::bitrates(48000);
         require(std::find(encoder_table.begin(),encoder_table.end(),600u)==encoder_table.end(),"The targeted rate stays out of the encoder table");
-        require(lhdc::manual_bitrate(600)&&!lhdc::manual_bitrate(900),"Only the targeted rate is marked as such");
+        require(lhdc::manual_bitrate(600)&&lhdc::manual_bitrate(700)&&lhdc::manual_bitrate(800)&&!lhdc::manual_bitrate(900),"Only the targeted rates are marked as such");
         require(lhdc::encoded_frame_bytes({48000,24,600})==376,"48 kHz 600 kbps frame size");
+        require(lhdc::encoded_frame_bytes({48000,24,700})==438,"48 kHz 700 kbps frame size");
+        require(lhdc::encoded_frame_bytes({48000,24,800})==502,"48 kHz 800 kbps frame size");
         require(lhdc::encoded_frame_bytes({44100,24,600})==410,"44.1 kHz 600 kbps frame size");
+        require(lhdc::encoded_frame_bytes({44100,24,700})==478,"44.1 kHz 700 kbps frame size");
+        require(lhdc::encoded_frame_bytes({44100,24,800})==546,"44.1 kHz 800 kbps frame size");
         rejects([]{lhdc::quality_index({48000,24,600});},"A targeted rate has no table index");
+        rejects([]{lhdc::quality_index({48000,24,800});},"A targeted rate has no table index");
         rejects([]{lhdc::validate_profile({48000,24,550});},"An unknown rate is rejected");
+        lhdc::validate_profile({48000,24,900});
         lhdc::validate_profile({48000,24,600});
+        lhdc::validate_profile({48000,24,700});
+        lhdc::validate_profile({48000,24,800});
         lhdc::BitrateControl targeted({48000,24,600},false);
         require(targeted.bitrate()==600&&targeted.observe(1000,300,10000,500)==600,"A fixed targeted rate never drops");
         lhdc::BitrateControl targeted_adaptive({48000,24,600},true);
         require(targeted_adaptive.bitrate()==500,"An adaptive targeted ceiling starts at the conservative level");
         require(targeted_adaptive.observe(15200,60,0,0)==600,"An adaptive targeted ceiling reaches the targeted rate");
+        lhdc::BitrateControl targeted_high({48000,24,800},false);
+        require(targeted_high.bitrate()==800&&targeted_high.observe(1000,300,10000,500)==800,"A fixed targeted rate never drops");
         const auto targeted_follow=lhdc::follow_pcm({48000,24,600},44100,24,false);
         require(targeted_follow.sample_rate==44100&&targeted_follow.kbps==600,"A targeted rate follows the PCM sample rate");
         {
@@ -115,6 +125,18 @@ int main() {
                 }
             }
             require(frames>0,"The targeted rate produces frames");
+        }
+        {
+            lhdc::Encoder encoder({48000,24,800},658);
+            std::uint32_t frames=0;
+            for (unsigned block=0;block<24;++block) {
+                const auto packet=encoder.encode(av::Bytes(encoder.block_bytes()));
+                if (!packet.payload.empty()) {
+                    require(packet.payload.size()==502,"The 800 kbps rate produces the expected frame length");
+                    frames+=packet.frames;
+                }
+            }
+            require(frames>0,"The 800 kbps rate produces frames");
         }
         require(av::command(0,av::Signal::discover)==av::Bytes{0,1},"Discover command bytes");
         require(av::command(15,av::Signal::get_capabilities,av::Bytes{4})==av::Bytes{0xf0,2,4},"SEID encoding");
