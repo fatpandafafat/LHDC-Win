@@ -13,7 +13,7 @@ private:
     std::vector<std::uint32_t> levels_;
     std::vector<std::uint64_t> retry_after_,retry_delay_;
     std::size_t index_=0;
-    std::uint64_t last_sample_,stable_since_,next_raise_,last_dropped_=0;
+    std::uint64_t last_sample_,stable_since_,entered_at_,next_raise_,last_dropped_=0;
     unsigned pressure_samples_=0;
     double max_pending_ms_=0;
     bool adaptive_;

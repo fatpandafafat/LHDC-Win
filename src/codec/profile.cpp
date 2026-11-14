@@ -4,8 +4,8 @@
 namespace lhdc {
 namespace {
 // Rates the pinned encoder cannot express through its own table. They are
-// produced by targeting a bitrate directly. The adaptive ladder keeps the
-// table, so these are manual choices only.
+// produced by targeting a bitrate directly. The adaptive ladder is built from
+// selectable_bitrates(), so they take part in it as well.
 constexpr std::uint32_t manual_rates[] = {600,700,800};
 }
 std::vector<std::uint32_t> bitrates(std::uint32_t rate) {
