@@ -3,6 +3,10 @@ namespace lhdc {
 bool adaptive_bitrate_enabled();
 void publish_active_bitrate(unsigned kbps);
 void publish_active_format(unsigned sample_rate, unsigned bits);
+// The rate the profile asks for. The adaptive control may be playing a lower
+// one, so the ceiling and the live rate are published separately.
+void publish_active_ceiling(unsigned kbps);
+unsigned read_active_ceiling();
 void inspect_audio_service();
 // The live bitrate the service publishes, read from the registry alone. It
 // touches neither the Bluetooth stack nor the device tree, so a panel that

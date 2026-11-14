@@ -20,8 +20,23 @@ void publish_active_bitrate(unsigned kbps) {
     const auto result=RegSetKeyValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBitrate",REG_DWORD,&value,sizeof(value));
     if(result!=ERROR_SUCCESS) throw std::runtime_error("Active bitrate write failed, Win32="+std::to_string(result));
     // A zero bitrate means no playback is active. Clear the published format
-    // so the panel never shows a stale sample rate beside an idle stream.
-    if(kbps==0) publish_active_format(0,0);
+    // and the ceiling so the panel never shows a stale rate beside an idle
+    // stream.
+    if(kbps==0) { publish_active_format(0,0); publish_active_ceiling(0); }
+}
+void publish_active_ceiling(unsigned kbps) {
+    // The ceiling is the rate the profile asks for. The adaptive control may
+    // be playing a lower one, so a panel that shows both tells the two apart.
+    const DWORD value=kbps;
+    const auto result=RegSetKeyValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveCeilingKbps",REG_DWORD,&value,sizeof(value));
+    if(result!=ERROR_SUCCESS) throw std::runtime_error("Active ceiling write failed, Win32="+std::to_string(result));
+}
+unsigned read_active_ceiling() {
+    DWORD ceiling=0,size=sizeof(ceiling);
+    const auto result=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveCeilingKbps",RRF_RT_REG_DWORD,nullptr,&ceiling,&size);
+    if(result==ERROR_FILE_NOT_FOUND) return 0;
+    if(result!=ERROR_SUCCESS) throw std::runtime_error("Active ceiling read failed, Win32="+std::to_string(result));
+    return ceiling;
 }
 void publish_active_format(unsigned sample_rate, unsigned bits) {
     const DWORD rate=sample_rate;
@@ -59,8 +74,10 @@ void inspect_active_bitrate() {
         CloseServiceHandle(manager);
     }
     if (!running) { active=0; active_rate=0; active_bits=0; }
+    const auto ceiling=read_active_ceiling();
     std::cout << "{\"event\":\"active_bitrate\",\"active_kbps\":"<<active
         << ",\"active_sample_rate\":"<<active_rate<<",\"active_bits\":"<<active_bits
+        << ",\"ceiling_kbps\":"<<ceiling
         << ",\"running\":"<<(running?"true":"false")<<"}\n";
 }
 void inspect_audio_service() {
@@ -109,10 +126,12 @@ void inspect_audio_service() {
     const auto active_bits_error=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"ActiveBits",RRF_RT_REG_DWORD,nullptr,&active_bits,&active_bits_size);
     if(active_bits_error!=ERROR_SUCCESS && active_bits_error!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("Active bit depth read failed, Win32="+std::to_string(active_bits_error));
     if(status.dwCurrentState!=SERVICE_RUNNING || !target || !same_instance(target->service,L"lhdc-transport")) { active=0; active_rate=0; active_bits=0; }
+    const auto ceiling=read_active_ceiling();
     std::cout << "{\"event\":\"audio_service\",\"installed\":true,\"running\":" << (status.dwCurrentState==SERVICE_RUNNING?"true":"false")
         << ",\"state\":" << status.dwCurrentState << ",\"pid\":" << status.dwProcessId << ",\"profile_editable\":" << (writable==ERROR_SUCCESS?"true":"false")
         << ",\"peer_capabilities\":" << json_string(avdtp::hex(caps)) << ",\"capability_revision\":"<<current_revision<<",\"media_mtu\":"<<mtu
         << ",\"adaptive_bitrate\":"<<(adaptive_bitrate_enabled()?"true":"false")<<",\"active_kbps\":"<<active
-        << ",\"active_sample_rate\":"<<active_rate<<",\"active_bits\":"<<active_bits<<"}\n";
+        << ",\"active_sample_rate\":"<<active_rate<<",\"active_bits\":"<<active_bits
+        << ",\"ceiling_kbps\":"<<ceiling<<"}\n";
 }
 }

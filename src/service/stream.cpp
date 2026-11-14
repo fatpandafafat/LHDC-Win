@@ -163,6 +163,7 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpWatcher& hfp) 
     std::vector<std::uint8_t> block(encoder.block_bytes());
     bitrate_control=BitrateControl(profile,adaptive,clock_ms());
     publish_active_bitrate(encoder.bitrate());
+    publish_active_ceiling(profile.kbps);
     publish_active_format(profile.sample_rate,profile.bits);
     std::osyncstream(std::cout) << "{\"event\":\"direct_audio_started\",\"source\":\"WaveRT\",\"sample_rate\":" << profile.sample_rate << ",\"bits\":" << profile.bits << ",\"kbps\":" << encoder.bitrate()
         << ",\"ceiling_kbps\":"<<profile.kbps<<",\"adaptive_bitrate\":"<<(adaptive?"true":"false")
@@ -246,6 +247,7 @@ void transfer(DirectPcm& pcm,HANDLE stop,Profile profile,const HfpWatcher& hfp) 
                 adaptive=requested_adaptive;
                 bitrate_control=BitrateControl(selected,adaptive,clock_ms());
                 profile=selected; quality=requested;
+                publish_active_ceiling(profile.kbps);
                 std::osyncstream(std::cout)<<"{\"event\":\"codec_bitrate_settings\",\"ceiling_kbps\":"<<profile.kbps
                     <<",\"adaptive_bitrate\":"<<(adaptive?"true":"false")<<"}"<<std::endl;
             }
