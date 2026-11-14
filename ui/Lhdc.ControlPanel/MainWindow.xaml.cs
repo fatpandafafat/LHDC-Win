@@ -12,7 +12,7 @@ using System.Windows.Threading;
 namespace Lhdc.ControlPanel;
 
 public partial class MainWindow : Window {
-    private static readonly int[] QualityBitrates = [64,160,192,256,320,400,500,900,1000];
+    private static readonly int[] QualityBitrates = [64,160,192,256,320,400,500,600,900,1000];
     private NativeClient? client;
     private JsonArray? rates, bitDepths;
     private string peerCaps = "", service = "", logFile = "";

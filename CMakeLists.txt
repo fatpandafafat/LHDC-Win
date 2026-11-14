@@ -14,12 +14,16 @@ add_library(lhdc_core
     src/avdtp/lhdc_v5.cpp
     src/avdtp/stream.cpp
     src/codec/encoder.cpp
+    src/codec/lhdcv5_bps.c
     src/codec/bitrate_control.cpp
     src/codec/profile.cpp
     src/media/packetizer.cpp
     src/audio/wav.cpp
     src/audio/pcm_queue.cpp)
 target_include_directories(lhdc_core PUBLIC src include)
+# The internal layout of the pinned encoder, needed to target a bitrate that
+# its own index table cannot express.
+target_include_directories(lhdc_core PRIVATE third_party/lhdcv5/src)
 target_link_libraries(lhdc_core PUBLIC lhdcv5_enc)
 if(MSVC)
     target_compile_options(lhdc_core PRIVATE /W4 /WX /utf-8)

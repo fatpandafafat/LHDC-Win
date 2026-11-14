@@ -126,7 +126,7 @@ static void profile_options(const av::Bytes& raw,std::uint32_t mtu=0) {
         const auto rate=caps.sample_rates[i];
         std::cout << "{\"sample_rate\":" << rate << ",\"bitrates\":[";
         bool first=true;
-        for (const auto kbps:lhdc::bitrates(rate)) {
+        for (const auto kbps:lhdc::selectable_bitrates(rate)) {
             if (kbps<caps.min_kbps || kbps>caps.max_kbps) continue;
             if(mtu && lhdc::encoded_frame_bytes({rate,16,kbps})>mtu-lhdc::media_header_bytes) continue;
             if (!first) std::cout<<','; first=false; std::cout<<kbps;
@@ -152,7 +152,11 @@ static int run(int argc,char** argv) {
         else if (command=="profile-options" && (argc==3 || argc==4)) profile_options(av::unhex(argv[2]),argc==4?number(argv[3]):0);
         else if (command=="profile-check" && argc==5) {
             const lhdc::Profile profile{number(argv[2]),number(argv[3]),number(argv[4])};
-            std::cout << "{\"event\":\"encoder_profile\",\"quality_index\":" << lhdc::quality_index(profile) << "}\n";
+            lhdc::validate_profile(profile);
+            // A rate outside the encoder's own table has no index. It is
+            // reported as a targeted rate instead.
+            const auto index=lhdc::manual_bitrate(profile.kbps)?-1:static_cast<int>(lhdc::quality_index(profile));
+            std::cout << "{\"event\":\"encoder_profile\",\"quality_index\":" << index << ",\"kbps\":" << profile.kbps << "}\n";
         }
         else if (command=="configure" && argc==6) {
             const lhdc::Profile profile{number(argv[3]),number(argv[4]),number(argv[5])};

@@ -11,10 +11,14 @@ constexpr unsigned pressure_sample_count=3;
 }
 BitrateControl::BitrateControl(Profile ceiling,bool adaptive,std::uint64_t now_ms)
     :last_sample_(now_ms),stable_since_(now_ms),next_raise_(now_ms+stable_interval_ms),adaptive_(adaptive) {
-    quality_index(ceiling);
+    validate_profile(ceiling);
     const auto floor=std::min(floor_kbps,ceiling.kbps);
     for (const auto kbps:bitrates(ceiling.sample_rate))
         if (kbps>=floor && kbps<=ceiling.kbps) levels_.push_back(kbps);
+    // A ceiling that the encoder table cannot express is still the top step.
+    // The steps below it stay the table entries, so the ladder of every
+    // existing rate is unchanged.
+    if (levels_.empty()||levels_.back()!=ceiling.kbps) levels_.push_back(ceiling.kbps);
     retry_after_.resize(levels_.size());
     retry_delay_.resize(levels_.size(),initial_retry_ms);
     index_=levels_.size()-1;

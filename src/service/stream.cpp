@@ -24,7 +24,7 @@ Profile service_profile() {
     static_assert(sizeof(Profile)==12);
     const auto result=RegGetValueW(HKEY_LOCAL_MACHINE,L"SOFTWARE\\LHDC-Win",L"Profile",RRF_RT_REG_BINARY,nullptr,&profile,&size);
     if (result!=ERROR_SUCCESS || size!=sizeof(profile)) throw std::runtime_error("Service codec profile is missing or invalid, Win32="+std::to_string(result));
-    quality_index(profile);
+    validate_profile(profile);
     return profile;
 }
 namespace {

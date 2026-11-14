@@ -6,7 +6,7 @@ static constexpr std::uint32_t minimums[]{64,160,256,400};
 static constexpr std::uint32_t maximums[]{1000,400,500,900};
 Bytes local_capabilities() { return local_capabilities(Profile{}); }
 Bytes local_capabilities(const Profile& profile) {
-    quality_index(profile);
+    validate_profile(profile);
     const auto rate=profile.sample_rate==44100?0x20:profile.sample_rate==48000?0x10:profile.sample_rate==96000?0x04:0x01;
     unsigned minimum=0,maximum=0;
     for (unsigned i=0;i<4;++i) if (minimums[i]<=profile.kbps) minimum=i;
@@ -48,7 +48,7 @@ V5Capabilities v5_capabilities(std::span<const std::uint8_t> raw) {
 }
 Bytes select_configuration(std::span<const std::uint8_t> raw,const Profile& profile) {
     const auto peer=v5_capabilities(raw);
-    quality_index(profile);
+    validate_profile(profile);
     if (std::find(peer.sample_rates.begin(),peer.sample_rates.end(),profile.sample_rate)==peer.sample_rates.end() ||
         std::find(peer.bit_depths.begin(),peer.bit_depths.end(),profile.bits)==peer.bit_depths.end() ||
         profile.kbps<peer.min_kbps || profile.kbps>peer.max_kbps)
